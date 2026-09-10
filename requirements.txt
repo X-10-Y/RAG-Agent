@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+python-multipart
+chromadb
+sentence-transformers
+rank-bm25
+jieba
+pypdf
+pdfplumber
+cnocr
+pdf2image
+openai
+python-dotenv
+langgraph
+typing_extensions
+streamlit
+requests

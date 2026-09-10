@@ -1,0 +1,101 @@
+[
+    {
+        "id": "001",
+        "file": "standard_contract.txt",
+        "label": "合规基准",
+        "expected_overall_risk": "低",
+        "expected_risks": []
+    },
+    {
+        "id": "002",
+        "file": "problem_contract.txt",
+        "label": "高风险霸王条款",
+        "expected_overall_risk": "高",
+        "expected_risks": [
+            {"clause_keyword": "三个月租金", "risk": "高", "type": "押金超收"},
+            {"clause_keyword": "日租金的200%", "risk": "高", "type": "滞纳金过高"},
+            {"clause_keyword": "押金不予退还", "risk": "高", "type": "押金不退"},
+            {"clause_keyword": "20%的违约金", "risk": "高", "type": "违约金过高"},
+            {"clause_keyword": "最终解释权归甲方", "risk": "高", "type": "单方解释权"}
+        ]
+    },
+    {
+        "id": "003",
+        "file": "hidden_trap_contract.txt",
+        "label": "名实不符",
+        "expected_overall_risk": "高",
+        "expected_risks": [
+            {"clause_keyword": "任意解除权", "risk": "高", "type": "企业任意解除"},
+            {"clause_keyword": "110%", "risk": "高", "type": "押金超收"}
+        ]
+    },
+    {
+        "id": "004",
+        "file": "sublet_trap.txt",
+        "label": "转租陷阱",
+        "expected_overall_risk": "中",
+        "expected_risks": [
+            {"clause_keyword": "月租金3倍的违约金", "risk": "高", "type": "违约金过高"}
+        ]
+    },
+    {
+        "id": "005",
+        "file": "renewal_trap.txt",
+        "label": "续租陷阱",
+        "expected_overall_risk": "中",
+        "expected_risks": [
+            {"clause_keyword": "月租金10%的占用费", "risk": "高", "type": "占用费过高"},
+            {"clause_keyword": "单方确定", "risk": "高", "type": "单方涨租"}
+        ]
+    },
+    {
+        "id": "006",
+        "file": "fee_shifting.txt",
+        "label": "费用转嫁",
+        "expected_overall_risk": "高",
+        "expected_risks": [
+            {"clause_keyword": "一切费用", "risk": "高", "type": "费用转嫁"},
+            {"clause_keyword": "乙方不得异议", "risk": "高", "type": "单方调价"}
+        ]
+    },
+    {
+        "id": "007",
+        "file": "oral_promise.txt",
+        "label": "口头承诺",
+        "expected_overall_risk": "中",
+        "expected_risks": [
+            {"clause_keyword": "以书面条款为准", "risk": "高", "type": "排除口头承诺"}
+        ]
+    },
+    {
+        "id": "008",
+        "file": "second_landlord.txt",
+        "label": "二房东风险",
+        "expected_overall_risk": "高",
+        "expected_risks": [
+            {"clause_keyword": "甲方不承担任何责任", "risk": "高", "type": "转嫁产权风险"}
+        ]
+    },
+    {
+        "id": "009",
+        "file": "formaldehyde.txt",
+        "label": "甲醛房",
+        "expected_overall_risk": "高",
+        "expected_risks": [
+            {"clause_keyword": "自行委托检测", "risk": "高", "type": "甲醛责任转嫁"}
+        ]
+    },
+    {
+        "id": "010",
+        "file": "comprehensive_trap.txt",
+        "label": "综合陷阱",
+        "expected_overall_risk": "高",
+        "expected_risks": [
+            {"clause_keyword": "三个月租金", "risk": "高", "type": "押金超收"},
+            {"clause_keyword": "200%", "risk": "高", "type": "滞纳金过高"},
+            {"clause_keyword": "押金不退", "risk": "高", "type": "押金不退"},
+            {"clause_keyword": "20%的违约金", "risk": "高", "type": "违约金过高"},
+            {"clause_keyword": "最终解释权", "risk": "高", "type": "单方解释权"}
+        ]
+    }
+]
