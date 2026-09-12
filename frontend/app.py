@@ -345,11 +345,15 @@ for msg in st.session_state.messages:
             st.markdown(msg["content"])
 # 处理"快速开始"点击
 pending = st.session_state.pop("_pending", None)
+# 输入框始终显示
+user_input = st.chat_input("输入您的问题，例如：帮我分析这条条款...")
+# 优先处理快速开始，其次处理用户输入
 if pending:
     prompt = pending
+elif user_input:
+    prompt = user_input
 else:
-    prompt = st.chat_input("输入您的问题，例如：帮我分析这条条款...")
-# 处理用户输入
+    prompt = None
 if prompt:
     # 如果是新输入（非快速开始触发），也要记录
     if not pending:

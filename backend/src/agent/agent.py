@@ -8,6 +8,41 @@ from agent.tools import TOOLS, get_tool, get_tools_info
 from logger import logger
 import time
 load_dotenv()
+import re
+def find_clause_by_llm(contract_text: str, user_query: str) -> str:
+    """让 LLM 从合同条款目录中选出最相关的一条"""
+    # 按"第X条"切分
+    parts = re.split(r'(第[一二三四五六七八九十百千万0-9]+条)', contract_text)
+    clauses = []
+    for i in range(1, len(parts), 2):
+        if i + 1 < len(parts):
+            clauses.append((parts[i] + parts[i + 1]).strip())
+    if not clauses:
+        return ""
+    # 生成条款目录（每条前 30 字）
+    catalog = "\n".join([f"{i+1}. {c[:30]}..." for i, c in enumerate(clauses)])
+    prompt = f"""用户想分析合同里的某一条。请从下面目录中选出最相关的一条。
+用户问：{user_query}
+条款目录：
+{catalog}
+只输出序号（数字），不相关输出 0。"""
+    client = OpenAI(
+        api_key=os.getenv("DEEPSEEK_API_KEY"),
+        base_url="https://api.deepseek.com"
+    )
+    resp = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.1,
+        max_tokens=10
+    )
+    try:
+        idx = int(resp.choices[0].message.content.strip()) - 1
+        if 0 <= idx < len(clauses):
+            return clauses[idx]
+    except:
+        pass
+    return ""
 # ============================================================
 # 1. 定义 State
 # ============================================================
@@ -39,7 +74,8 @@ def decide_node(state: AgentState) -> dict:
 {get_tools_info()}
 {history_text}
 规则（严格遵守）：
-- 用户明确说"分析这条""看看这条" → analyze_contract_clause，args 填 clause
+- 用户明确说"分析这条""看看这条""看看押金那一条" → analyze_contract_clause
+  args 填 clause（原话即可，系统会自动定位到对应条款）
 - 用户说"大概看一下""整体怎么样" → quick_preview，args 留空 {{}} 即可
 - 用户说"仔细审查""全面分析""深度扫描""一条一条看" → deep_scan，args 留空 {{}} 即可
 - 用户问常识性问题 → rag_search，args 填 question
@@ -101,6 +137,16 @@ def execute_node(state: AgentState) -> dict:
             print(f"ℹ️ 已注入真实合同文本 ({len(real_contract)} 字符) 到 {tool_name}")
         else:
             print(f"⚠️ state 中没有 contract_text，{tool_name} 将收到空文本")
+    if tool_name == "analyze_contract_clause":
+        clause = args.get("clause", "")
+        real_contract = state.get("contract_text", "")
+        if real_contract and clause and len(clause) < 30:
+            matched = find_clause_by_llm(real_contract, clause)
+            if matched:
+                print(f"ℹ️ LLM 定位到条款: {matched[:50]}...")
+                args["clause"] = matched
+            else:
+                print(f"⚠️ LLM 未找到相关条款，使用原参数")
     tool_func = get_tool(tool_name)
     if tool_func is None:
         result = f"未知工具：{tool_name}"

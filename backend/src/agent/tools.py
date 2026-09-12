@@ -179,9 +179,16 @@ def analyze_contract_clause(clause: str) -> dict:
 # 4. 工具3：快速预览
 # ============================================================
 def quick_preview(contract_text: str) -> dict:
-    prompt = f"""你是租房合同审阅专家。请快速预览该合同，输出整体风险判断，JSON格式。
+    prompt = f"""你是租房合同审阅专家。请快速预览该合同，输出整体风险判断。
+
 合同内容：
 {contract_text[:6000]}
+
+要求：
+1. 只输出 JSON，不要有任何其他文字、不要加 markdown 代码块标记
+2. risk_items 最多列 5 条最重要的风险，不要超过 5 条
+3. 每条 reason 不超过 50 字
+
 输出格式：
 {{"overall_risk": "高/中/低", "risk_items": [{{"clause": "条款摘要", "risk": "高", "reason": "原因"}}], "summary": "一句话总结"}}
 """
@@ -193,12 +200,19 @@ def quick_preview(contract_text: str) -> dict:
         model="deepseek-chat",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.1,
-        max_tokens=800
+        max_tokens=2000
     )
+    raw = resp.choices[0].message.content.strip()
+    if "```json" in raw:
+        raw = raw.split("```json")[1].split("```")[0].strip()
+    elif "```" in raw:
+        raw = raw.split("```")[1].split("```")[0].strip()
     try:
-        return json.loads(resp.choices[0].message.content)
-    except:
-        return {"overall_risk": "未知", "risk_items": [], "summary": "分析失败，请尝试上传具体条款"}
+        return json.loads(raw)
+    except Exception as e:
+        print(f"⚠️ quick_preview JSON 解析失败: {e}")
+        print(f"原始输出前 500 字: {raw[:500]}")
+        return {"overall_risk": "未知", "risk_items": [], "summary": f"解析失败：{str(e)[:50]}"}
 # ============================================================
 # 5. 工具4：深度扫描
 # ============================================================
