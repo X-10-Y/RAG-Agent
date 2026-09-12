@@ -52,6 +52,7 @@ class ChatResponse(BaseModel):
     tool_used: str
     step_count: int
     success: bool
+    sources: Optional[list] = []
 # ==================== 根路径 & 健康检查 ====================
 @app.get("/")
 def root():
@@ -94,7 +95,20 @@ async def chat(request: ChatRequest):
         elif not isinstance(answer, str):
             answer = str(answer)
         logger.info(f"[API] Agent 返回成功，使用工具: {tool_name}")
-        return ChatResponse(answer=answer, tool_used=tool_name, step_count=step_count, success=True)
+        sources = []
+        try:
+           if isinstance(answer, str) and answer.strip().startswith("{"):
+              parsed = json.loads(answer)
+              sources = parsed.get("sources", [])
+        except:
+            pass
+        return ChatResponse(
+            answer=answer,
+            tool_used=tool_name,
+            step_count=step_count,
+            success=True,
+            sources=sources
+        )
     except Exception as e:
         logger.error(f"[API] Agent 处理失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Agent 执行失败: {str(e)}")

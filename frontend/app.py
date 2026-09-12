@@ -122,12 +122,25 @@ def call_status() -> dict:
     except:
         pass
     return {}
-def call_chat(user_input: str, contract_text: str = "") -> dict:
+def build_history(messages, max_turns=3):
+    history = []
+    i = 0
+    while i < len(messages) - 1:
+        if messages[i].get("role") == "user" and messages[i+1].get("role") == "assistant":
+            history.append({
+                "user": messages[i].get("content", ""),
+                "assistant": messages[i+1].get("content", "")
+            })
+            i += 2
+        else:
+            i += 1
+    return history[-max_turns:]
+def call_chat(user_input: str, contract_text: str = "", history: list = None) -> dict:
     """调用 Agent 对话接口"""
     payload = {
         "user_input": user_input,
         "contract_text": contract_text,
-        "history": []
+        "history": history if history else []
     }
     start = time.time()
     r = requests.post(f"{API_URL}/chat", json=payload, timeout=180)
@@ -363,7 +376,8 @@ if prompt:
     with st.chat_message("assistant"):
         with st.spinner("🤔 Agent 正在分析..."):
             try:
-                result = call_chat(prompt, st.session_state.contract_text)
+                history = build_history(st.session_state.messages[:-1])
+                result = call_chat(prompt, st.session_state.contract_text, history)
                 data = result["data"]
                 elapsed = result["elapsed"]
                 tool_used = data.get("tool_used", "未知")

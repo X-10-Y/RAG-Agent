@@ -64,7 +64,7 @@ def decide_node(state: AgentState) -> dict:
     history_text = ""
     if history:
         history_text = "\n对话历史：\n" + "\n".join([
-            f"用户：{h['user']}\n助手：{h['assistant']}"
+            f"用户：{h.get('user', h.get('role', ''))}\n助手：{h.get('assistant', h.get('content', ''))}"
             for h in history[-3:]
         ])
     tools_description = f"""
@@ -157,11 +157,8 @@ def execute_node(state: AgentState) -> dict:
             result = tool_func(**args)
             elapsed = time.time() - start_time
             if isinstance(result, dict):
-                if "answer" in result:
-                    result = result["answer"]
-                else:
-                     import json as _json
-                     result = _json.dumps(result, ensure_ascii=False)
+                import json as _json
+                result = _json.dumps(result, ensure_ascii=False)
             else:
                 result = str(result)
             logger.info(f"[执行] 工具 {tool_name} 执行耗时: {elapsed:.2f}s, 结果: {result[:50]}...")
