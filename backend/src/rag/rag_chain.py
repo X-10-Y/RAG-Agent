@@ -17,10 +17,14 @@ class RAGChain:
         self._load_and_index()
         self.history = []  # 存储对话历史 [(user, assistant), ...]
     def _load_and_index(self):
+    # 如果向量库已有数据，跳过重复索引
+        if self.store.count() > 0:
+           print(f"✅ 向量库已有 {self.store.count()} 条数据，跳过索引")
+           return
         docs = load_text_files(self.data_dir)
         if not docs:
-            print("⚠️ 未找到文档，跳过索引")
-            return
+           print("⚠️ 未找到文档，跳过索引")
+           return
         for doc in docs:
             chunks = split_by_structure(doc['content'])
             self.store.add_documents(chunks, source_file=doc['filename'])

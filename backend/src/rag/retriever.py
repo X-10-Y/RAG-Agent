@@ -35,6 +35,16 @@ class VectorStore:
         self.tokenized_documents = []
         # 重排序模型（延迟加载）
         self.reranker = None
+        self.last_trace = {}
+        try:
+            self.collection = self.client.get_collection("documents")
+            all_data = self.collection.get(include=["documents"])
+            self.all_documents = all_data.get("documents", [])
+            if self.all_documents:
+                self.build_bm25_index()
+                print(f"✅ 启动时从向量库恢复 {len(self.all_documents)} 条文档")
+        except Exception:
+            pass
     # ========== 集合管理 ==========
     def create_collection(self, name: str = "documents"):
         try:
@@ -148,6 +158,7 @@ class VectorStore:
         """
         混合检索：BM25 + 向量检索，通过 RRF 融合，然后用 CrossEncoder 重排序
         """
+        trace = {"query": query}
         if self.collection is None:
             self.create_collection()
         if self.bm25 is None:
@@ -158,6 +169,7 @@ class VectorStore:
         bm25_scores = self.bm25.get_scores(tokenized_query)
         # 按 BM25 分数降序排列，得到 doc_id 列表（索引）
         bm25_ranked = sorted(range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True)[:recall_k]
+        trace["bm25_top"] = [(doc_id, float(bm25_scores[doc_id])) for doc_id in bm25_ranked[:5]]
         # ---------- 2. 向量检索 ----------
         query_vector = embed_query(query)
         vector_results = self.collection.query(
@@ -172,8 +184,10 @@ class VectorStore:
             except ValueError:
                  print(f"⚠️ 跳过非数字 ID: {doc_id}")
                  continue
+        trace["vector_top"] = vector_ranked[:5]
         # ---------- 3. RRF 融合 ----------
         fused = reciprocal_rank_fusion([bm25_ranked, vector_ranked], k=60)
+        trace["fused_top"] = fused[:5]
         # 取前 top_k 个 doc_id
         top_doc_ids = [doc_id for doc_id, score in fused[:top_k]]
         # ---------- 4. 构建候选结果 ----------
@@ -187,8 +201,11 @@ class VectorStore:
         # ---------- 5. 重排序 ----------
         if candidates:
             reranked = self.rerank(query, candidates, top_k=top_k)
+            trace["reranked_top"] = [(r["doc_id"], r.get("rerank_score", 0)) for r in reranked]
+            self.last_trace = trace
             return reranked
         else:
+            self.last_trace = trace
             return []
     def count(self) -> int:
         if self.collection is None:

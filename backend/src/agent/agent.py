@@ -54,9 +54,24 @@ class AgentState(TypedDict):
     final_answer: str
     step_count: int
     history: list
+    retry_count: int
 # ============================================================
 # 2. 决策节点
 # ============================================================
+def is_tool_error(result: str) -> bool:
+    """判断工具结果是否为失败"""
+    if not result or not result.strip():
+        return True
+    fail_signals = ["工具执行失败", "未知工具", "❌"]
+    return any(signal in result for signal in fail_signals)
+def should_retry(state: AgentState) -> str:
+    """条件路由：工具失败且未超过重试上限时回到决策节点"""
+    retry_count = state.get("retry_count", 0)
+    if retry_count >= 2:   # 已经重试过一次，不再重试
+        return "final"
+    if is_tool_error(state.get("tool_result", "")):
+        return "retry"
+    return "final"
 def decide_node(state: AgentState) -> dict:
     user_input = state["user_input"]
     history = state.get("history", [])
@@ -67,12 +82,16 @@ def decide_node(state: AgentState) -> dict:
             f"用户：{h.get('user', h.get('role', ''))}\n助手：{h.get('assistant', h.get('content', ''))}"
             for h in history[-3:]
         ])
+    retry_hint = ""
+    if state.get("retry_count", 0) > 0:
+        retry_hint = "\n⚠️ 上一次工具调用失败，请换一个工具或调整参数。\n"
     tools_description = f"""
 你是一个专业的租房合同审阅助手。
 
 可用工具列表：
 {get_tools_info()}
 {history_text}
+{retry_hint}
 规则（严格遵守）：
 - 用户明确说"分析这条""看看这条""看看押金那一条" → analyze_contract_clause
   args 填 clause（原话即可，系统会自动定位到对应条款）
@@ -111,6 +130,12 @@ def decide_node(state: AgentState) -> dict:
         if tool_name not in TOOLS:
             tool_name = "rag_search"
             decision = {"tool": tool_name, "args": {"question": user_input}}
+        retry_count = state.get("retry_count", 0)
+        last_tool = state.get("decision", {}).get("tool", "")
+        if retry_count > 0 and tool_name == last_tool:
+            logger.warning(f"[决策] LLM 重复选择失败工具 {last_tool}，强制切换")
+            decision = {"tool": "rag_search", "args": {"question": user_input}}
+            tool_name = "rag_search"
         logger.info(f"[决策] 选定工具: {tool_name}, 参数: {decision.get('args', {})}")
         return {"decision": decision, "step_count": state.get("step_count", 0) + 1}
     except Exception as e:
@@ -165,7 +190,11 @@ def execute_node(state: AgentState) -> dict:
         except Exception as e:
             result = f"工具执行失败：{str(e)}"
             logger.error(f"[执行] 工具 {tool_name} 执行失败：{e}")
-    return {"tool_result": result}
+    retry_count = state.get("retry_count", 0)
+    if is_tool_error(result):
+        retry_count += 1
+        logger.warning(f"[执行] 工具 {tool_name} 失败，retry_count={retry_count}")
+    return {"tool_result": result, "retry_count": retry_count}
 # ============================================================
 # 4. 最终回答节点
 # ============================================================
@@ -186,6 +215,13 @@ builder.add_node("execute", execute_node)
 builder.add_node("final", final_node)
 builder.add_edge(START, "decide")
 builder.add_edge("decide", "execute")
-builder.add_edge("execute", "final")
+builder.add_conditional_edges(
+    "execute",
+    should_retry,
+    {
+        "retry": "decide",
+        "final": "final",
+    }
+)
 builder.add_edge("final", END)
 graph = builder.compile()
