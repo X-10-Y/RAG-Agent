@@ -162,8 +162,9 @@ class VectorStore:
         if self.collection is None:
             self.create_collection()
         if self.bm25 is None:
-            print("⚠️ BM25 索引未构建，请先添加文档")
-            return []
+            # 无 BM25 索引（如向量库为空或索引构建失败）时降级为纯向量检索
+            print("⚠️ BM25 索引未构建，降级为纯向量检索")
+            return self.search(query, top_k)
         # ---------- 1. BM25 检索 ----------
         tokenized_query = list(jieba.cut(query))
         bm25_scores = self.bm25.get_scores(tokenized_query)
