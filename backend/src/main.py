@@ -33,6 +33,8 @@ class AskRequest(BaseModel):
     question: str
     top_k: Optional[int] = 3
     history: Optional[List[dict]] = None
+    session_id: Optional[str] = None
+    source_file: Optional[str] = None
 class Source(BaseModel):
     content: str
     score: float
@@ -43,6 +45,8 @@ class UploadResponse(BaseModel):
     message: str
     filename: str
     chunks: int
+    chars: int = 0
+    text: str = ""
 class ChatRequest(BaseModel):
     user_input: str
     contract_text: Optional[str] = ""
@@ -116,14 +120,20 @@ async def chat(request: ChatRequest):
 @app.post("/ask", response_model=AskResponse)
 def ask(request: AskRequest):
     try:
-        result = rag.ask(request.question, request.top_k)
+        result = rag.ask(request.question, request.top_k,
+                         session_id=request.session_id,
+                         history=request.history,
+                         source_file=request.source_file)
         return AskResponse(answer=result["answer"], sources=result["sources"])
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 @app.post("/ask/stream")
 def ask_stream(request: AskRequest):
     def generate():
-        sources = rag.ask(request.question, request.top_k).get("sources", [])
+        sources = rag.ask(request.question, request.top_k,
+                          session_id=request.session_id,
+                          history=request.history,
+                          source_file=request.source_file).get("sources", [])
         if not sources:
             yield "未找到相关信息"
             return
@@ -155,15 +165,24 @@ def ask_stream(request: AskRequest):
 @app.post("/upload", response_model=UploadResponse)
 def upload_file(file: UploadFile = File(...)):
     try:
-        file_path = os.path.join(DOCS_DIR, file.filename)
+        filename = os.path.basename(file.filename or "")
+        if not filename:
+            raise HTTPException(status_code=400, detail="文件名不能为空")
+        if os.path.splitext(filename)[1].lower() not in {".txt", ".pdf"}:
+            raise HTTPException(status_code=400, detail="仅支持 .txt / .pdf 文件")
+        file_path = os.path.join(DOCS_DIR, filename)
         with open(file_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
-        rag._load_and_index()
+        text = rag.index_file(file_path)
         return UploadResponse(
             message="上传成功",
-            filename=file.filename,
-            chunks=rag.store.count()
+            filename=filename,
+            chunks=rag.store.count(),
+            chars=len(text),
+            text=text
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 # ==================== 启动入口 ====================

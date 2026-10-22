@@ -32,14 +32,21 @@ class VectorStore:
         # BM25 相关
         self.bm25 = None
         self.all_documents = []   # 原始文档文本列表，索引即doc_id
+        self.doc_sources = []     # 与 all_documents 一一对应的来源文件名
         self.tokenized_documents = []
         # 重排序模型（延迟加载）
         self.reranker = None
         self.last_trace = {}
         try:
             self.collection = self.client.get_collection("documents")
-            all_data = self.collection.get(include=["documents"])
+            all_data = self.collection.get(include=["documents", "metadatas"])
             self.all_documents = all_data.get("documents", [])
+            metadatas = all_data.get("metadatas") or []
+            self.doc_sources = [
+                (m or {}).get("source_file") for m in metadatas
+            ]
+            if len(self.doc_sources) != len(self.all_documents):
+                self.doc_sources = [None] * len(self.all_documents)
             if self.all_documents:
                 self.build_bm25_index()
                 print(f"✅ 启动时从向量库恢复 {len(self.all_documents)} 条文档")
@@ -96,6 +103,7 @@ class VectorStore:
         self.collection.add(**kwargs)
         print(f"✅ 已添加 {len(documents)} 个文档到向量库")
         self.all_documents.extend(documents)
+        self.doc_sources.extend([source_file] * len(documents))
         self.build_bm25_index()
     def is_file_indexed(self, filename: str) -> bool:
         """检查某个文件是否已经被索引"""
@@ -110,15 +118,18 @@ class VectorStore:
         except Exception:
             return False
     # ========== 纯向量检索（保留原有接口） ==========
-    def search(self, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
+    def search(self, query: str, top_k: int = 3, source_file: str = None) -> List[Dict[str, Any]]:
         if self.collection is None:
             self.create_collection()
         query_vector = embed_query(query)
-        results = self.collection.query(
-            query_embeddings=[query_vector],
-            n_results=top_k,
-            include=["documents", "metadatas", "distances"]
-        )
+        query_kwargs = {
+            "query_embeddings": [query_vector],
+            "n_results": top_k,
+            "include": ["documents", "metadatas", "distances"]
+        }
+        if source_file:
+            query_kwargs["where"] = {"source_file": source_file}
+        results = self.collection.query(**query_kwargs)
         formatted_results = []
         for i in range(len(results['documents'][0])):
             formatted_results.append({
@@ -154,7 +165,8 @@ class VectorStore:
         candidates.sort(key=lambda x: x['rerank_score'], reverse=True)
         return candidates[:top_k]
     # ========== 混合检索（BM25 + 向量 + RRF 融合） ==========
-    def hybrid_search(self, query: str, top_k: int = 5, recall_k: int = 50) -> List[Dict[str, Any]]:
+    def hybrid_search(self, query: str, top_k: int = 5, recall_k: int = 50,
+                      source_file: str = None) -> List[Dict[str, Any]]:
         """
         混合检索：BM25 + 向量检索，通过 RRF 融合，然后用 CrossEncoder 重排序
         """
@@ -164,20 +176,30 @@ class VectorStore:
         if self.bm25 is None:
             # 无 BM25 索引（如向量库为空或索引构建失败）时降级为纯向量检索
             print("⚠️ BM25 索引未构建，降级为纯向量检索")
-            return self.search(query, top_k)
+            return self.search(query, top_k, source_file=source_file)
         # ---------- 1. BM25 检索 ----------
         tokenized_query = list(jieba.cut(query))
         bm25_scores = self.bm25.get_scores(tokenized_query)
         # 按 BM25 分数降序排列，得到 doc_id 列表（索引）
-        bm25_ranked = sorted(range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True)[:recall_k]
+        bm25_ranked = sorted(range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True)
+        if source_file:
+            # 只保留指定来源文件的文本块
+            bm25_ranked = [
+                i for i in bm25_ranked
+                if i < len(self.doc_sources) and self.doc_sources[i] == source_file
+            ]
+        bm25_ranked = bm25_ranked[:recall_k]
         trace["bm25_top"] = [(doc_id, float(bm25_scores[doc_id])) for doc_id in bm25_ranked[:5]]
         # ---------- 2. 向量检索 ----------
         query_vector = embed_query(query)
-        vector_results = self.collection.query(
-            query_embeddings=[query_vector],
-            n_results=recall_k,
-            include=["documents", "metadatas", "distances"]
-        )
+        query_kwargs = {
+            "query_embeddings": [query_vector],
+            "n_results": recall_k,
+            "include": ["documents", "metadatas", "distances"]
+        }
+        if source_file:
+            query_kwargs["where"] = {"source_file": source_file}
+        vector_results = self.collection.query(**query_kwargs)
         vector_ranked = []
         for doc_id in vector_results['ids'][0]:
             try:

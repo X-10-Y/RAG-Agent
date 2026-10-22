@@ -1,9 +1,10 @@
 import os
+import threading
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 from config import DOCS_DIR
 from openai import OpenAI
 from dotenv import load_dotenv
-from rag.loader import load_text_files
+from rag.loader import load_text_files, load_document
 from rag.splitter import split_by_structure
 from rag.retriever import VectorStore
 load_dotenv()
@@ -15,7 +16,10 @@ class RAGChain:
         self.store = VectorStore()
         self.store.create_collection()
         self._load_and_index()
-        self.history = []  # 存储对话历史 [(user, assistant), ...]
+        # 会话历史按 session_id 隔离，避免多用户互相污染
+        self._histories = {}
+        self._history_lock = threading.Lock()
+        self._max_history_turns = 10
     def _load_and_index(self):
     # 如果向量库已有数据，跳过重复索引
         if self.store.count() > 0:
@@ -29,6 +33,28 @@ class RAGChain:
             chunks = split_by_structure(doc['content'])
             self.store.add_documents(chunks, source_file=doc['filename'])
         print(f"✅ 已索引 {self.store.count()} 个文本块")
+    def index_file(self, filepath: str) -> str:
+        """解析单个文件并增量入库，返回解析出的正文（供前端回填）"""
+        text = load_document(filepath)
+        filename = os.path.basename(filepath)
+        if text.strip() and not self.store.is_file_indexed(filename):
+            chunks = split_by_structure(text)
+            self.store.add_documents(chunks, source_file=filename)
+            print(f"✅ 已索引 {filename}：{len(chunks)} 个文本块")
+        return text
+    # ========== 会话历史（按 session_id 隔离） ==========
+    def _get_history(self, session_id: str = None) -> list:
+        if not session_id:
+            return []
+        with self._history_lock:
+            return list(self._histories.get(session_id, []))
+    def _append_history(self, session_id: str, question: str, answer: str):
+        if not session_id:
+            return
+        with self._history_lock:
+            history = self._histories.setdefault(session_id, [])
+            history.append({"user": question, "assistant": answer})
+            del history[:-self._max_history_turns]
     def _format_history(self, history: list) -> str:
         """将历史对话格式化为文本"""
         if not history:
@@ -64,13 +90,16 @@ class RAGChain:
         )
         rewritten = resp.choices[0].message.content.strip()
         return rewritten
-    def ask(self, question: str, top_k: int = 5) -> dict:
-        # 查询改写
-        rewritten = self._rewrite_query(question, self.history)
+    def ask(self, question: str, top_k: int = 5, session_id: str = None,
+            history: list = None, source_file: str = None) -> dict:
+        # 查询改写：优先使用传入的历史，否则按 session_id 取
+        if history is None:
+            history = self._get_history(session_id)
+        rewritten = self._rewrite_query(question, history)
         print(f"🔍 原始问题：{question}")
         print(f"📝 改写后：{rewritten}")
         # 使用改写后的问题检索
-        results = self.store.hybrid_search(rewritten, top_k=top_k)
+        results = self.store.hybrid_search(rewritten, top_k=top_k, source_file=source_file)
         if not results:
             return {"answer": "未找到相关信息", "sources": []}
         # 去重
@@ -98,8 +127,8 @@ class RAGChain:
             max_tokens=500
         )
         answer = resp.choices[0].message.content
-        # 更新历史
-        self.history.append({"user": question, "assistant": answer})
+        # 更新会话历史（按 session_id 隔离）
+        self._append_history(session_id, question, answer)
         return {
             "answer": answer,
             "sources": [{"content": r['content'], "score": r.get('rerank_score', r['score'])} for r in unique_results]
@@ -114,7 +143,7 @@ if __name__ == '__main__':
             break
         if not q:
             continue
-        result = rag.ask(q)
+        result = rag.ask(q, session_id="cli")
         print(f"\n📝 回答：{result['answer']}")
         print("\n📎 来源：")
         for s in result['sources']:

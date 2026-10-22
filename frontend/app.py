@@ -303,12 +303,19 @@ with st.sidebar:
                     preview = st.session_state.contract_text[:800]
                     st.text(preview + ("..." if len(st.session_state.contract_text) > 800 else ""))
             else:
-                # PDF 上传到后端索引
-                with st.spinner("上传中..."):
+                # PDF 上传到后端：解析 + 索引，并把正文回填到会话，供深度扫描使用
+                with st.spinner("上传并解析中..."):
                     result = call_upload(file_bytes, uploaded.name)
                     st.success(f"✅ {result.get('message', '上传成功')}")
-                    st.caption(f"知识库现有 {result.get('chunks', 0)} 块")
-                st.session_state.contract_name = uploaded.name
+                    st.session_state.contract_text = result.get("text", "")
+                    st.session_state.contract_name = uploaded.name
+                    st.caption(
+                        f"已解析 {result.get('chars', 0)} 字 · 知识库现有 {result.get('chunks', 0)} 块"
+                    )
+                if st.session_state.contract_text:
+                    with st.expander("📖 预览合同"):
+                        preview = st.session_state.contract_text[:800]
+                        st.text(preview + ("..." if len(st.session_state.contract_text) > 800 else ""))
         except Exception as e:
             st.error(f"上传失败：{e}")
     if st.session_state.contract_text:
