@@ -1,4 +1,5 @@
 import os
+import json
 import threading
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 from config import DOCS_DIR
@@ -8,6 +9,26 @@ from rag.loader import load_text_files, load_document
 from rag.splitter import split_by_structure
 from rag.retriever import VectorStore
 load_dotenv()
+
+# ==================== Redis 会话持久化 ====================
+# 优先用 Redis 存会话历史（重启不丢、多实例共享），不可用时降级到进程内 dict
+# 用 db=1 避免和 ChatBI 的 db=0 冲突
+try:
+    import redis
+    _redis_cli = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"),
+                             port=int(os.getenv("REDIS_PORT", 6379)),
+                             db=int(os.getenv("RAG_REDIS_DB", 1)),
+                             decode_responses=True)
+    _redis_cli.ping()
+    _REDIS_OK = True
+    _HISTORY_KEY_PREFIX = "rag:history:"
+    _HISTORY_TTL = int(os.getenv("HISTORY_TTL_SECONDS", 7200))  # 默认 2 小时
+except Exception as _e:
+    print(f"⚠️ Redis 不可用，会话历史降级到进程内 dict: {_e}")
+    _REDIS_OK = False
+    _redis_cli = None
+
+
 class RAGChain:
     def __init__(self, data_dir: str = None):
         if data_dir is None:
@@ -17,8 +38,12 @@ class RAGChain:
         self.store.create_collection()
         self._load_and_index()
         # 会话历史按 session_id 隔离，避免多用户互相污染
-        self._histories = {}
-        self._history_lock = threading.Lock()
+        if _REDIS_OK:
+            self._histories = None  # 用 Redis，不走 dict
+            print(f"✅ 会话历史已接入 Redis (db=1, TTL={_HISTORY_TTL}s)")
+        else:
+            self._histories = {}
+            self._history_lock = threading.Lock()
         self._max_history_turns = 10
     def _load_and_index(self):
     # 如果向量库已有数据，跳过重复索引
@@ -43,18 +68,35 @@ class RAGChain:
             print(f"✅ 已索引 {filename}：{len(chunks)} 个文本块")
         return text
     # ========== 会话历史（按 session_id 隔离） ==========
+    def _history_key(self, session_id: str) -> str:
+        return f"{_HISTORY_KEY_PREFIX}{session_id}"
+
     def _get_history(self, session_id: str = None) -> list:
         if not session_id:
             return []
-        with self._history_lock:
-            return list(self._histories.get(session_id, []))
+        if _REDIS_OK:
+            key = self._history_key(session_id)
+            raw = _redis_cli.lrange(key, 0, -1)
+            return [json.loads(item) for item in raw]
+        else:
+            with self._history_lock:
+                return list(self._histories.get(session_id, []))
+
     def _append_history(self, session_id: str, question: str, answer: str):
         if not session_id:
             return
-        with self._history_lock:
-            history = self._histories.setdefault(session_id, [])
-            history.append({"user": question, "assistant": answer})
-            del history[:-self._max_history_turns]
+        turn = json.dumps({"user": question, "assistant": answer}, ensure_ascii=False)
+        if _REDIS_OK:
+            key = self._history_key(session_id)
+            _redis_cli.rpush(key, turn)
+            # 保持最多 _max_history_turns 条
+            _redis_cli.ltrim(key, -self._max_history_turns, -1)
+            _redis_cli.expire(key, _HISTORY_TTL)
+        else:
+            with self._history_lock:
+                history = self._histories.setdefault(session_id, [])
+                history.append({"user": question, "assistant": answer})
+                del history[:-self._max_history_turns]
     def _format_history(self, history: list) -> str:
         """将历史对话格式化为文本"""
         if not history:

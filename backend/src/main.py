@@ -4,7 +4,7 @@ import os
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 import json
 import shutil
-from fastapi import FastAPI, HTTPException, File, UploadFile
+from fastapi import FastAPI, HTTPException, File, UploadFile, Header
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -162,17 +162,26 @@ def ask_stream(request: AskRequest):
         yield json.dumps({"sources": sources})
     return StreamingResponse(generate(), media_type="text/plain")
 # ==================== 文档上传接口 ====================
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20MB
+_UPLOAD_API_KEY = os.getenv("UPLOAD_API_KEY")  # 不配则跳过鉴权
 @app.post("/upload", response_model=UploadResponse)
-def upload_file(file: UploadFile = File(...)):
+def upload_file(file: UploadFile = File(...), x_api_key: Optional[str] = Header(default=None)):
+    # API Key 校验（仅当配置了 UPLOAD_API_KEY 时生效；本地演示不配就跳过）
+    if _UPLOAD_API_KEY and x_api_key != _UPLOAD_API_KEY:
+        raise HTTPException(status_code=401, detail="上传鉴权失败")
     try:
         filename = os.path.basename(file.filename or "")
         if not filename:
             raise HTTPException(status_code=400, detail="文件名不能为空")
         if os.path.splitext(filename)[1].lower() not in {".txt", ".pdf"}:
             raise HTTPException(status_code=400, detail="仅支持 .txt / .pdf 文件")
+        # 先读入内存做大小校验；UploadFile 是流式，读过后要 seek 回去再写
+        content = file.read()
+        if len(content) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail=f"文件过大，上限 {MAX_UPLOAD_BYTES // 1024 // 1024}MB")
         file_path = os.path.join(DOCS_DIR, filename)
         with open(file_path, "wb") as f:
-            shutil.copyfileobj(file.file, f)
+            f.write(content)
         text = rag.index_file(file_path)
         return UploadResponse(
             message="上传成功",
