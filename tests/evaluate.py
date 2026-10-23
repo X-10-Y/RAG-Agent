@@ -99,12 +99,29 @@ def evaluate_one(item: dict) -> dict:
             for r in risk_items
         ])
 
-        # 计算命中率
+        # 建立 clause_keyword -> 标注 risk 的映射，以及系统 risk 列表
+        keyword_to_label_risk = {r["clause_keyword"]: r.get("risk") for r in item["expected_risks"]}
+        keyword_to_sys_risk = {}
+        for ri in risk_items:
+            clause = str(ri.get("clause", ""))
+            for kw in keyword_to_label_risk:
+                if kw in clause or kw in str(ri.get("explanation", "")):
+                    keyword_to_sys_risk[kw] = ri.get("risk")
+                    break
+
+        # 计算召回命中（关键词匹配）
         hit = 0
+        risk_match = 0
+        risk_checked = 0
         for expected in item["expected_risks"]:
             keyword = expected["clause_keyword"]
             if keyword in all_text:
                 hit += 1
+            # 只有当系统也返回了这个条款时，才对比 risk 等级
+            if keyword in keyword_to_sys_risk:
+                risk_checked += 1
+                if keyword_to_sys_risk[keyword] == expected.get("risk"):
+                    risk_match += 1
 
         return {
             "id": item["id"],
@@ -112,6 +129,8 @@ def evaluate_one(item: dict) -> dict:
             "status": "成功",
             "hit": hit,
             "total": len(item["expected_risks"]),
+            "risk_match": risk_match,
+            "risk_checked": risk_checked,
             "tool_used": result.get("tool_used", "未知"),
             "high_count": parsed.get("high_count", 0) if isinstance(parsed, dict) else 0,
         }
@@ -134,6 +153,8 @@ def main():
 
     total_hit = 0
     total_expected = 0
+    total_risk_match = 0
+    total_risk_checked = 0
     results = []
 
     for item in dataset:
@@ -141,13 +162,18 @@ def main():
         results.append(r)
         total_hit += r["hit"]
         total_expected += r["total"]
+        total_risk_match += r.get("risk_match", 0)
+        total_risk_checked += r.get("risk_checked", 0)
         rate = r["hit"] / r["total"] * 100 if r["total"] > 0 else 100
+        risk_acc = r["risk_match"] / r["risk_checked"] * 100 if r["risk_checked"] > 0 else 100
         print(f"[{r['id']}] {r.get('label', '')}")
-        print(f"     状态: {r['status']} | 命中: {r['hit']}/{r['total']} ({rate:.0f}%) | 工具: {r.get('tool_used', '-')}")
+        print(f"     状态: {r['status']} | 命中: {r['hit']}/{r['total']} ({rate:.0f}%) | 风险等级: {r['risk_match']}/{r['risk_checked']} ({risk_acc:.0f}%) | 工具: {r.get('tool_used', '-')}")
         print("-" * 70)
 
     overall_rate = total_hit / total_expected * 100 if total_expected > 0 else 0
-    print(f"\n✅ 总体命中率: {total_hit}/{total_expected} = {overall_rate:.1f}%")
+    overall_risk_acc = total_risk_match / total_risk_checked * 100 if total_risk_checked > 0 else 0
+    print(f"\n✅ 总体召回命中: {total_hit}/{total_expected} = {overall_rate:.1f}%")
+    print(f"✅ 风险等级准确率: {total_risk_match}/{total_risk_checked} = {overall_risk_acc:.1f}%")
 
     # 保存结果
     out_path = os.path.join(os.path.dirname(__file__), "eval_result.json")
@@ -156,6 +182,9 @@ def main():
             "overall_hit_rate": round(overall_rate, 2),
             "total_hit": total_hit,
             "total_expected": total_expected,
+            "overall_risk_accuracy": round(overall_risk_acc, 2),
+            "total_risk_match": total_risk_match,
+            "total_risk_checked": total_risk_checked,
             "details": results
         }, f, ensure_ascii=False, indent=2)
     print(f"📁 详细结果已保存到: {out_path}")
