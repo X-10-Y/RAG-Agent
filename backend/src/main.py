@@ -180,6 +180,8 @@ async def upload_file(file: UploadFile = File(...), x_api_key: Optional[str] = H
         content = await file.read()
         if len(content) > MAX_UPLOAD_BYTES:
             raise HTTPException(status_code=413, detail=f"文件过大，上限 {MAX_UPLOAD_BYTES // 1024 // 1024}MB")
+        if not content:
+            raise HTTPException(status_code=400, detail="文件内容为空")
         file_path = os.path.join(DOCS_DIR, filename)
         with open(file_path, "wb") as f:
             f.write(content)
