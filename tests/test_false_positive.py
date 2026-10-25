@@ -19,6 +19,9 @@ DOCS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "doc
 # 合规合同列表（这些合同里，理论上有风险条款应该很少）
 COMPLIANT_FILES = [
     "standard_contract.txt",
+    "compliant_beijing_2023.txt",
+    "compliant_samr_2025.txt",
+    "compliant_jilin_2023.txt",
 ]
 
 
