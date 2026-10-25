@@ -165,9 +165,11 @@ def main():
         total_risk_match += r.get("risk_match", 0)
         total_risk_checked += r.get("risk_checked", 0)
         rate = r["hit"] / r["total"] * 100 if r["total"] > 0 else 100
-        risk_acc = r["risk_match"] / r["risk_checked"] * 100 if r["risk_checked"] > 0 else 100
+        risk_match = r.get("risk_match", 0)
+        risk_checked = r.get("risk_checked", 0)
+        risk_acc = risk_match / risk_checked * 100 if risk_checked > 0 else 100
         print(f"[{r['id']}] {r.get('label', '')}")
-        print(f"     状态: {r['status']} | 命中: {r['hit']}/{r['total']} ({rate:.0f}%) | 风险等级: {r['risk_match']}/{r['risk_checked']} ({risk_acc:.0f}%) | 工具: {r.get('tool_used', '-')}")
+        print(f"     状态: {r['status']} | 命中: {r['hit']}/{r['total']} ({rate:.0f}%) | 风险等级: {risk_match}/{risk_checked} ({risk_acc:.0f}%) | 工具: {r.get('tool_used', '-')}")
         print("-" * 70)
 
     overall_rate = total_hit / total_expected * 100 if total_expected > 0 else 0

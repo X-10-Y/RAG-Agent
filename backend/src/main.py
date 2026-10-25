@@ -7,6 +7,7 @@ import shutil
 from fastapi import FastAPI, HTTPException, File, UploadFile, Header
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from typing import Optional, List
 from openai import OpenAI
@@ -165,7 +166,7 @@ def ask_stream(request: AskRequest):
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20MB
 _UPLOAD_API_KEY = os.getenv("UPLOAD_API_KEY")  # 不配则跳过鉴权
 @app.post("/upload", response_model=UploadResponse)
-def upload_file(file: UploadFile = File(...), x_api_key: Optional[str] = Header(default=None)):
+async def upload_file(file: UploadFile = File(...), x_api_key: Optional[str] = Header(default=None)):
     # API Key 校验（仅当配置了 UPLOAD_API_KEY 时生效；本地演示不配就跳过）
     if _UPLOAD_API_KEY and x_api_key != _UPLOAD_API_KEY:
         raise HTTPException(status_code=401, detail="上传鉴权失败")
@@ -175,14 +176,14 @@ def upload_file(file: UploadFile = File(...), x_api_key: Optional[str] = Header(
             raise HTTPException(status_code=400, detail="文件名不能为空")
         if os.path.splitext(filename)[1].lower() not in {".txt", ".pdf"}:
             raise HTTPException(status_code=400, detail="仅支持 .txt / .pdf 文件")
-        # 先读入内存做大小校验；UploadFile 是流式，读过后要 seek 回去再写
-        content = file.read()
+        # 先读入内存做大小校验，再直接落盘
+        content = await file.read()
         if len(content) > MAX_UPLOAD_BYTES:
             raise HTTPException(status_code=413, detail=f"文件过大，上限 {MAX_UPLOAD_BYTES // 1024 // 1024}MB")
         file_path = os.path.join(DOCS_DIR, filename)
         with open(file_path, "wb") as f:
             f.write(content)
-        text = rag.index_file(file_path)
+        text = await run_in_threadpool(rag.index_file, file_path)
         return UploadResponse(
             message="上传成功",
             filename=filename,
