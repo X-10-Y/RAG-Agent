@@ -152,6 +152,8 @@ def analyze_contract_clause(clause: str) -> dict:
             "risk": rule_result["risks"][0]["level"],
             "explanation": rule_result["risks"][0]["reason"],
             "suggestion": f"建议修改：{rule_result['risks'][0]['type']}",
+            "clause": clause[:200] + ("..." if len(clause) > 200 else ""),
+            "clause_no": extract_clause_no(clause),
             "source": "规则引擎"
         }
     prompt = f"""你是一位专业的租房法律助手。分析该条款，输出 JSON。
@@ -171,10 +173,16 @@ def analyze_contract_clause(clause: str) -> dict:
         temperature=0.1,
         max_tokens=300
     )
+    clause_preview = clause[:200] + ("..." if len(clause) > 200 else "")
     try:
-        return json.loads(resp.choices[0].message.content)
+        data = json.loads(resp.choices[0].message.content)
+        data.setdefault("clause", clause_preview)
+        data.setdefault("clause_no", extract_clause_no(clause))
+        return data
     except:
-        return {"risk": "未知", "explanation": "解析失败，请重试", "suggestion": "建议咨询专业律师"}
+        return {"risk": "未知", "explanation": "解析失败，请重试",
+                "suggestion": "建议咨询专业律师",
+                "clause": clause_preview, "clause_no": extract_clause_no(clause)}
 # ============================================================
 # 4. 工具3：快速预览
 # ============================================================
@@ -216,19 +224,33 @@ def quick_preview(contract_text: str) -> dict:
 # ============================================================
 # 5. 工具4：深度扫描
 # ============================================================
+CLAUSE_NO_RE = re.compile(r'第[一二三四五六七八九十百千万0-9]+条')
+
+
+def extract_clause_no(text: str, last_no: str = "") -> str:
+    """从合同原文抽取条款编号；抽不到时沿用上一块的编号（跨块续号）"""
+    m = CLAUSE_NO_RE.search(text)
+    return m.group(0) if m else last_no
+
+
 def deep_scan(contract_text: str) -> dict:
     chunks = split_by_structure(contract_text, max_chunk_size=500)
     if not chunks:
         return {"error": "合同解析失败，请检查文本格式", "risk_items": [], "summary": ""}
     results = []
+    last_no = ""
     for chunk in chunks:
         if not re.search(r'第[一二三四五六七八九十百千万0-9]+条|[一二三四五六七八九十百千万]+[、.．]|\d+[、.．]', chunk):
             continue
+        clause_no = extract_clause_no(chunk, last_no)
+        if clause_no:
+            last_no = clause_no
         try:
             result = analyze_contract_clause(chunk)
             results.append({
                 "clause": chunk[:200] + ("..." if len(chunk) > 200 else ""),
                 "full_text": chunk,
+                "clause_no": clause_no,
                 "risk": result.get("risk", "未知"),
                 "explanation": result.get("explanation", ""),
                 "suggestion": result.get("suggestion", "")
@@ -237,6 +259,7 @@ def deep_scan(contract_text: str) -> dict:
             results.append({
                 "clause": chunk[:100] + "...",
                 "full_text": chunk,
+                "clause_no": clause_no,
                 "risk": "错误",
                 "explanation": f"分析失败：{str(e)}",
                 "suggestion": ""

@@ -19,6 +19,13 @@ def find_clause_by_llm(contract_text: str, user_query: str) -> str:
             clauses.append((parts[i] + parts[i + 1]).strip())
     if not clauses:
         return ""
+    # 确定性优先：用户明确说了「第X条」时直接按编号定位，不调模型
+    m = re.search(r'第[一二三四五六七八九十百千万0-9]+条', user_query)
+    if m:
+        target = m.group(0)
+        for c in clauses:
+            if c.startswith(target):
+                return c
     # 生成条款目录（每条前 30 字）
     catalog = "\n".join([f"{i+1}. {c[:30]}..." for i, c in enumerate(clauses)])
     prompt = f"""用户想分析合同里的某一条。请从下面目录中选出最相关的一条。

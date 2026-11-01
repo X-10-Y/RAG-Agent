@@ -148,9 +148,11 @@ def call_chat(user_input: str, contract_text: str = "", history: list = None) ->
     if r.status_code != 200:
         raise Exception(f"HTTP {r.status_code}: {r.text}")
     return {"data": r.json(), "elapsed": elapsed}
-def call_ask(question: str, top_k: int = 3) -> dict:
+def call_ask(question: str, top_k: int = 3, source_file: str = "") -> dict:
     """调用纯 RAG 问答接口"""
     payload = {"question": question, "top_k": top_k}
+    if source_file:
+        payload["source_file"] = source_file
     start = time.time()
     r = requests.post(f"{API_URL}/ask", json=payload, timeout=60)
     elapsed = time.time() - start
@@ -181,7 +183,7 @@ def parse_answer(answer):
             except:
                 pass
     return None
-def render_risk_card(risk: str, clause: str, explanation: str = "", suggestion: str = "", source: str = ""):
+def render_risk_card(risk: str, clause: str, explanation: str = "", suggestion: str = "", source: str = "", clause_no: str = ""):
     """渲染单条风险卡片"""
     risk_class = {
         "高": "risk-card-high",
@@ -189,10 +191,11 @@ def render_risk_card(risk: str, clause: str, explanation: str = "", suggestion: 
         "低": "risk-card-low",
     }.get(risk, "risk-card-info")
     icon = {"高": "🚨", "中": "⚠️", "低": "✅"}.get(risk, "ℹ️")
+    no_badge = f'<span class="meta-info">· {clause_no}</span>' if clause_no else ""
     source_badge = f'<span class="meta-info">· {source}</span>' if source else ""
     html = f"""
     <div class="{risk_class}">
-        <strong>{icon} 【{risk}风险】</strong>{source_badge}<br/>
+        <strong>{icon} 【{risk}风险】</strong>{no_badge}{source_badge}<br/>
         <div style="margin-top:0.5rem; color:#374151; font-size:0.9rem;">
             <strong>条款：</strong>{clause}
         </div>
@@ -211,7 +214,8 @@ def render_answer(answer_raw, tool_used: str = ""):
             clause=parsed.get("clause", ""),
             explanation=parsed.get("explanation", ""),
             suggestion=parsed.get("suggestion", ""),
-            source=parsed.get("source", "")
+            source=parsed.get("source", ""),
+            clause_no=parsed.get("clause_no", "")
         )
         return
     # 情况2：快速预览结果 {"overall_risk": ..., "risk_items": [...], "summary": ...}
@@ -226,7 +230,8 @@ def render_answer(answer_raw, tool_used: str = ""):
                 render_risk_card(
                     risk=item.get("risk", "未知"),
                     clause=item.get("clause", ""),
-                    explanation=item.get("reason", "")
+                    explanation=item.get("reason", ""),
+                    clause_no=item.get("clause_no", "")
                 )
         return
     # 情况3：深度扫描结果 {"risk_items": [...], "summary": ..., "high_count": ...}
@@ -248,7 +253,8 @@ def render_answer(answer_raw, tool_used: str = ""):
                 clause=item.get("clause", ""),
                 explanation=item.get("explanation", ""),
                 suggestion=item.get("suggestion", ""),
-                source=item.get("source", "")
+                source=item.get("source", ""),
+                clause_no=item.get("clause_no", "")
             )
         return
     # 情况4：RAG 回答（含 sources）
