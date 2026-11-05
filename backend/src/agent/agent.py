@@ -1,6 +1,6 @@
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
-from openai import OpenAI
+from config import get_llm_client
 import json
 import os
 from dotenv import load_dotenv
@@ -33,10 +33,7 @@ def find_clause_by_llm(contract_text: str, user_query: str) -> str:
 条款目录：
 {catalog}
 只输出序号（数字），不相关输出 0。"""
-    client = OpenAI(
-        api_key=os.getenv("DEEPSEEK_API_KEY"),
-        base_url="https://api.deepseek.com"
-    )
+    client = get_llm_client()
     resp = client.chat.completions.create(
         model="deepseek-chat",
         messages=[{"role": "user", "content": prompt}],
@@ -112,10 +109,7 @@ def decide_node(state: AgentState) -> dict:
 不确定时用 rag_search。
 用户问题：{user_input}
 只输出 JSON："""
-    client = OpenAI(
-        api_key=os.getenv("DEEPSEEK_API_KEY"),
-        base_url="https://api.deepseek.com"
-    )
+    client = get_llm_client()
     logger.info(f"[决策] 用户输入: {user_input}")
     start_time = time.time()
     response = client.chat.completions.create(

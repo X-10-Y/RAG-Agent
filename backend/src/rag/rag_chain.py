@@ -2,8 +2,7 @@ import os
 import json
 import threading
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-from config import DOCS_DIR
-from openai import OpenAI
+from config import DOCS_DIR, get_llm_client
 from dotenv import load_dotenv
 from rag.loader import load_text_files, load_document
 from rag.splitter import split_by_structure
@@ -121,10 +120,7 @@ class RAGChain:
 
 改写后的完整问句："""
 
-        client = OpenAI(
-            api_key=os.getenv("DEEPSEEK_API_KEY"),
-            base_url="https://api.deepseek.com"
-        )
+        client = get_llm_client()
         resp = client.chat.completions.create(
             model="deepseek-chat",
             messages=[{"role": "user", "content": prompt}],
@@ -156,10 +152,7 @@ class RAGChain:
         for idx, r in enumerate(unique_results):
             print(f"  {idx+1}. 重排分: {r.get('rerank_score', 0):.4f} | 内容预览: {r['content'][:100]}...")
         context = "\n\n".join([r['content'] for r in unique_results])
-        client = OpenAI(
-            api_key=os.getenv("DEEPSEEK_API_KEY"),
-            base_url="https://api.deepseek.com"
-        )
+        client = get_llm_client()
         resp = client.chat.completions.create(
             model="deepseek-chat",
             messages=[

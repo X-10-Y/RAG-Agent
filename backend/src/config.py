@@ -16,3 +16,14 @@ VECTOR_DIM = 384
 LLM_MODEL = "deepseek-chat"
 LLM_BASE_URL = "https://api.deepseek.com"
 LLM_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+LLM_TIMEOUT = 60        # 单次请求超时（秒），SDK 默认值长达数百秒
+LLM_MAX_RETRIES = 2     # SDK 层自动重试次数
+def get_llm_client():
+    """统一创建 LLM 客户端：显式超时 + 有限重试，避免请求长期挂起"""
+    from openai import OpenAI
+    return OpenAI(
+        api_key=LLM_API_KEY,
+        base_url=LLM_BASE_URL,
+        timeout=LLM_TIMEOUT,
+        max_retries=LLM_MAX_RETRIES
+    )

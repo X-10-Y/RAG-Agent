@@ -80,6 +80,20 @@ def ocr_pdf_with_cnocr(filepath: str, dpi: int = 200) -> str:
     print(f"✅ OCR 完成，共识别 {len(images)} 页")
     return full_text
 # ==================== 统一文档加载入口 ====================
+def _assert_pdf_readable(filepath: str):
+    """加密 PDF 明确报错：否则会悄悄返回空文本，被当成空合同"""
+    if not pypdf:
+        return
+    try:
+        reader = pypdf.PdfReader(filepath)
+    except Exception:
+        return
+    if reader.is_encrypted:
+        try:
+            reader.decrypt("")
+            _ = reader.pages[0]
+        except Exception:
+            raise ValueError("PDF 已加密，无法解析，请提供未加密版本")
 def load_document(filepath: str) -> str:
     """根据文件扩展名选择对应的加载器"""
     ext = os.path.splitext(filepath)[1].lower()
@@ -87,6 +101,7 @@ def load_document(filepath: str) -> str:
         with open(filepath, 'r', encoding='utf-8') as f:
             return f.read()
     elif ext == '.pdf':
+        _assert_pdf_readable(filepath)
         # 第1步：尝试用 pdfplumber 提取文字
         if pdfplumber:
             try:

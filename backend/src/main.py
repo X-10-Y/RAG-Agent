@@ -10,11 +10,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from typing import Optional, List
-from openai import OpenAI
 from dotenv import load_dotenv
 load_dotenv()
 # ==================== 导入 RAG 和 Agent ====================
-from config import DOCS_DIR
+from config import DOCS_DIR, get_llm_client
 from logger import logger
 from rag.rag_chain import RAGChain
 from agent.agent import graph
@@ -139,10 +138,7 @@ def ask_stream(request: AskRequest):
             yield "未找到相关信息"
             return
         context = "\n\n".join([s["content"] for s in sources])
-        client = OpenAI(
-            api_key=os.getenv("DEEPSEEK_API_KEY"),
-            base_url="https://api.deepseek.com"
-        )
+        client = get_llm_client()
         prompt = f"""请基于参考内容回答，只说相关信息，不编造。
 参考内容：
 {context}
@@ -195,6 +191,9 @@ async def upload_file(file: UploadFile = File(...), x_api_key: Optional[str] = H
         )
     except HTTPException:
         raise
+    except ValueError as e:
+        # 解析类错误（如加密 PDF）按客户端错误返回，不打成 500
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 # ==================== 启动入口 ====================

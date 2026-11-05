@@ -2,10 +2,9 @@ import json
 import os
 import time
 import re
-import openai
 from dotenv import load_dotenv
 load_dotenv()
-from config import CHROMA_DB_DIR
+from config import CHROMA_DB_DIR, get_llm_client
 from rag.retriever import VectorStore
 from rag.loader import load_document
 from rag.splitter import split_by_structure
@@ -67,10 +66,7 @@ def rag_search(question: str, top_k: int = 5) -> dict:
     if results:
         context = "\n\n".join([r['content'] for r in results])
         sources = [{"content": r['content'], "score": r.get('score', 0)} for r in results]
-        client = openai.OpenAI(
-            api_key=os.getenv("DEEPSEEK_API_KEY"),
-            base_url="https://api.deepseek.com"
-        )
+        client = get_llm_client()
         prompt = f"""请基于以下参考内容回答用户问题。
 参考内容：
 {context}
@@ -83,10 +79,7 @@ def rag_search(question: str, top_k: int = 5) -> dict:
         )
         return {"answer": resp.choices[0].message.content, "sources": sources}
 
-    client = openai.OpenAI(
-        api_key=os.getenv("DEEPSEEK_API_KEY"),
-        base_url="https://api.deepseek.com"
-    )
+    client = get_llm_client()
     prompt = f"""用户问了一个关于租房合同的问题，但知识库中没有相关文档。
 请基于你的常识回答：{question}
 注意：回答要简明、实用。如果拿不准，就说"建议咨询专业律师或查阅当地住建委规定"。"""
@@ -163,10 +156,7 @@ def analyze_contract_clause(clause: str) -> dict:
 输出格式（严格 JSON）：
 {{"risk": "高/中/低", "explanation": "通俗解释", "suggestion": "建议"}}
 """
-    client = openai.OpenAI(
-        api_key=os.getenv("DEEPSEEK_API_KEY"),
-        base_url="https://api.deepseek.com"
-    )
+    client = get_llm_client()
     resp = client.chat.completions.create(
         model="deepseek-chat",
         messages=[{"role": "user", "content": prompt}],
@@ -200,10 +190,7 @@ def quick_preview(contract_text: str) -> dict:
 输出格式：
 {{"overall_risk": "高/中/低", "risk_items": [{{"clause": "条款摘要", "risk": "高", "reason": "原因"}}], "summary": "一句话总结"}}
 """
-    client = openai.OpenAI(
-        api_key=os.getenv("DEEPSEEK_API_KEY"),
-        base_url="https://api.deepseek.com"
-    )
+    client = get_llm_client()
     resp = client.chat.completions.create(
         model="deepseek-chat",
         messages=[{"role": "user", "content": prompt}],
