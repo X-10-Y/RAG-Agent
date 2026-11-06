@@ -16,7 +16,12 @@
             {"clause_keyword": "日租金的200%", "risk": "高", "type": "滞纳金过高"},
             {"clause_keyword": "押金不予退还", "risk": "高", "type": "押金不退"},
             {"clause_keyword": "20%的违约金", "risk": "高", "type": "违约金过高"},
-            {"clause_keyword": "最终解释权归甲方", "risk": "高", "type": "单方解释权"}
+            {"clause_keyword": "最终解释权归甲方", "risk": "高", "type": "单方解释权"},
+            {"clause_keyword": "隔断改造", "risk": "高", "type": "群租隔断"},
+            {"clause_keyword": "最短租期", "risk": "高", "type": "强制租期"},
+            {"clause_keyword": "第三方原因", "risk": "高", "type": "维修责任转嫁"},
+            {"clause_keyword": "深度清洁费", "risk": "高", "type": "退租乱收费"},
+            {"clause_keyword": "甲方所在地法院", "risk": "高", "type": "管辖权陷阱"}
         ]
     },
     {
@@ -26,7 +31,10 @@
         "expected_overall_risk": "高",
         "expected_risks": [
             {"clause_keyword": "任意解除权", "risk": "高", "type": "企业任意解除"},
-            {"clause_keyword": "110%", "risk": "高", "type": "押金超收"}
+            {"clause_keyword": "110%", "risk": "高", "type": "押金超收"},
+            {"clause_keyword": "固定收益", "risk": "高", "type": "托管失控"},
+            {"clause_keyword": "自然老化", "risk": "高", "type": "维修责任转嫁"},
+            {"clause_keyword": "押金不予退还", "risk": "高", "type": "押金不退"}
         ]
     },
     {
@@ -95,7 +103,12 @@
             {"clause_keyword": "200%", "risk": "高", "type": "滞纳金过高"},
             {"clause_keyword": "押金不退", "risk": "高", "type": "押金不退"},
             {"clause_keyword": "20%的违约金", "risk": "高", "type": "违约金过高"},
-            {"clause_keyword": "最终解释权", "risk": "高", "type": "单方解释权"}
+            {"clause_keyword": "最终解释权", "risk": "高", "type": "单方解释权"},
+            {"clause_keyword": "格局", "risk": "高", "type": "擅自改格局"},
+            {"clause_keyword": "60日", "risk": "高", "type": "续租通知陷阱"},
+            {"clause_keyword": "第三方原因", "risk": "高", "type": "维修责任转嫁"},
+            {"clause_keyword": "深度清洁费", "risk": "高", "type": "退租乱收费"},
+            {"clause_keyword": "甲方所在地法院", "risk": "高", "type": "管辖权陷阱"}
         ]
     }
 ]

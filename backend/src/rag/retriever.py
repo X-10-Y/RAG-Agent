@@ -17,6 +17,21 @@ def reciprocal_rank_fusion(ranked_lists: List[List[int]], k: int = 60) -> List[t
         for rank, doc_id in enumerate(rank_list):
             scores[doc_id] = scores.get(doc_id, 0) + 1.0 / (k + rank + 1)
     return sorted(scores.items(), key=lambda x: x[1], reverse=True)
+# ==================== 来源过滤参数归一化 ====================
+def normalize_sources(source_file) -> List[str]:
+    """把单个文件名或文件名列表统一成列表，空值返回空列表"""
+    if not source_file:
+        return []
+    if isinstance(source_file, str):
+        return [source_file]
+    return [s for s in source_file if s]
+def build_source_where(sources: List[str]) -> dict:
+    """构造 Chroma 的来源过滤条件：单个文件用等值，多个文件用 $in"""
+    if not sources:
+        return {}
+    if len(sources) == 1:
+        return {"source_file": sources[0]}
+    return {"source_file": {"$in": sources}}
 class VectorStore:
     """
     向量存储和检索引擎
@@ -29,6 +44,7 @@ class VectorStore:
         self.persist_dir = persist_dir
         self.client = chromadb.PersistentClient(path=persist_dir)
         self.collection = None
+        self._collection_name = None
         # BM25 相关
         self.bm25 = None
         self.all_documents = []   # 原始文档文本列表，索引即doc_id
@@ -54,6 +70,7 @@ class VectorStore:
             pass
     # ========== 集合管理 ==========
     def create_collection(self, name: str = "documents"):
+        self._collection_name = name
         try:
             self.collection = self.client.get_collection(name)
             print(f"✅ 已加载已有集合: {name}")
@@ -74,10 +91,12 @@ class VectorStore:
         self.bm25 = BM25Okapi(self.tokenized_documents)
         print(f"✅ BM25 索引构建完成")
     # ========== 添加文档 ==========
-    def add_documents(self, documents: List[str], source_file: str = None, ids: List[str] = None):
+    def add_documents(self, documents: List[str], source_file: str = None, ids: List[str] = None,
+                      content_hash: str = None):
         """
         添加文档到向量库
         source_file: 来源文件名，用于增量索引
+        content_hash: 整份文档内容的哈希，用于重复上传去重
         """
         if self.collection is None:
             self.create_collection()
@@ -93,6 +112,8 @@ class VectorStore:
             if source_file:
                 metadata["source_file"] = source_file
                 metadata["chunk_index"] = i
+            if content_hash:
+                metadata["content_hash"] = content_hash
             metadatas.append(metadata)
         kwargs = {
              "documents": documents,
@@ -117,6 +138,58 @@ class VectorStore:
             return len(result['ids']) > 0
         except Exception:
             return False
+    def hash_exists(self, content_hash: str) -> bool:
+        """检查同样内容是否已经入库（用于重复上传跳过索引）"""
+        if self.collection is None or not content_hash:
+            return False
+        try:
+            result = self.collection.get(where={"content_hash": content_hash}, limit=1)
+            return len(result['ids']) > 0
+        except Exception:
+            return False
+    def delete_source(self, filename: str) -> int:
+        """
+        删除某个来源文件的全部文本块，返回删除的块数
+        Chroma 的 id 是连续序号且与内存数组下标一一对应，直接删会产生空洞，
+        因此这里复用已有向量重建集合（不重新 embedding），保证 id 重新连续
+        """
+        if self.collection is None:
+            self.create_collection()
+        name = self._collection_name or "documents"
+        data = self.collection.get(include=["documents", "metadatas", "embeddings"])
+        docs = data.get("documents") or []
+        metas = data.get("metadatas") or []
+        embs = data.get("embeddings")
+        keep_docs, keep_metas, keep_embs = [], [], []
+        for i, doc in enumerate(docs):
+            meta = (metas[i] if i < len(metas) else None) or {}
+            if meta.get("source_file") == filename:
+                continue
+            keep_docs.append(doc)
+            keep_metas.append(meta)
+            emb = embs[i]
+            keep_embs.append(emb.tolist() if hasattr(emb, "tolist") else list(emb))
+        removed = len(docs) - len(keep_docs)
+        self.client.delete_collection(name)
+        self.collection = self.client.create_collection(
+            name=name,
+            metadata={"hnsw:space": "cosine"}
+        )
+        if keep_docs:
+            self.collection.add(
+                documents=keep_docs,
+                embeddings=keep_embs,
+                ids=[str(i) for i in range(len(keep_docs))],
+                metadatas=keep_metas
+            )
+        self.all_documents = keep_docs
+        self.doc_sources = [m.get("source_file") for m in keep_metas]
+        self.tokenized_documents = []
+        self.bm25 = None
+        if self.all_documents:
+            self.build_bm25_index()
+        print(f"✅ 已删除 {filename} 的 {removed} 个文本块，剩余 {len(keep_docs)} 块")
+        return removed
     # ========== 纯向量检索（保留原有接口） ==========
     def search(self, query: str, top_k: int = 3, source_file: str = None) -> List[Dict[str, Any]]:
         if self.collection is None:
@@ -128,7 +201,7 @@ class VectorStore:
             "include": ["documents", "metadatas", "distances"]
         }
         if source_file:
-            query_kwargs["where"] = {"source_file": source_file}
+            query_kwargs["where"] = build_source_where(normalize_sources(source_file))
         results = self.collection.query(**query_kwargs)
         formatted_results = []
         for i in range(len(results['documents'][0])):
@@ -182,11 +255,12 @@ class VectorStore:
         bm25_scores = self.bm25.get_scores(tokenized_query)
         # 按 BM25 分数降序排列，得到 doc_id 列表（索引）
         bm25_ranked = sorted(range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True)
-        if source_file:
-            # 只保留指定来源文件的文本块
+        sources = normalize_sources(source_file)
+        if sources:
+            # 只保留指定来源文件的文本块（支持多个文件）
             bm25_ranked = [
                 i for i in bm25_ranked
-                if i < len(self.doc_sources) and self.doc_sources[i] == source_file
+                if i < len(self.doc_sources) and self.doc_sources[i] in sources
             ]
         bm25_ranked = bm25_ranked[:recall_k]
         trace["bm25_top"] = [(doc_id, float(bm25_scores[doc_id])) for doc_id in bm25_ranked[:5]]
@@ -197,8 +271,8 @@ class VectorStore:
             "n_results": recall_k,
             "include": ["documents", "metadatas", "distances"]
         }
-        if source_file:
-            query_kwargs["where"] = {"source_file": source_file}
+        if sources:
+            query_kwargs["where"] = build_source_where(sources)
         vector_results = self.collection.query(**query_kwargs)
         vector_ranked = []
         for doc_id in vector_results['ids'][0]:

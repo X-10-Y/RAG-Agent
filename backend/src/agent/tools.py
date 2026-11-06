@@ -50,6 +50,12 @@ def get_rag_store():
             print(f"⚠️ RAG 向量库加载失败：{e}")
     return _rag_store
 
+def invalidate_rag_store():
+    """知识库变更（上传/删除）后丢弃缓存，下次调用重新加载，避免继续用旧索引"""
+    global _rag_store, _all_docs
+    _rag_store = None
+    _all_docs = None
+
 # ============================================================
 # 2. 工具1：RAG 知识库检索
 # ============================================================

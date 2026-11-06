@@ -1,4 +1,6 @@
 import os
+import re
+from collections import Counter
 from typing import List, Dict
 # ==================== PDF 解析 ====================
 try:
@@ -25,31 +27,60 @@ except ImportError:
     print("⚠️ pdf2image 未安装，无法将 PDF 转为图片。")
     print("   安装命令: pip install pdf2image")
 # ==================== PDF 文字提取 ====================
+def _strip_repeated_lines(pages: List[str], min_ratio: float = 0.6, max_len: int = 50) -> List[str]:
+    """去掉页眉/页脚：在多页重复出现、且数字无关的短行
+    判定：先把行内数字统一替换为 #，同一行出现在 >= min_ratio 的页面、且长度不超过 max_len
+    页数少于 3 时无法区分页眉与正文，直接原样返回
+    """
+    if len(pages) < 3:
+        return pages
+
+    def norm(line: str) -> str:
+        return re.sub(r"\d+", "#", line.strip())
+
+    counts = Counter()
+    for page in pages:
+        keys = {norm(l) for l in page.splitlines() if l.strip()}
+        counts.update(keys)
+    threshold = max(2, int(len(pages) * min_ratio))
+    repeated = {k for k, c in counts.items() if c >= threshold and len(k) <= max_len}
+    if not repeated:
+        return pages
+    cleaned = []
+    for page in pages:
+        kept = [l for l in page.splitlines() if not (l.strip() and norm(l) in repeated)]
+        cleaned.append("\n".join(kept))
+    return cleaned
+
 def load_pdf_with_pypdf(filepath: str) -> str:
     """使用 pypdf 读取文字型 PDF"""
     reader = pypdf.PdfReader(filepath)
-    text = ""
+    pages = []
     for page in reader.pages:
         page_text = page.extract_text()
         if page_text:
-            text += page_text + "\n"
-    return text
+            pages.append(page_text)
+    pages = _strip_repeated_lines(pages)
+    return "".join(p.rstrip() + "\n" for p in pages)
 def load_pdf_with_pdfplumber(filepath: str) -> str:
     """使用 pdfplumber 读取 PDF（能更好地处理表格）"""
-    text = ""
+    pages = []
     with pdfplumber.open(filepath) as pdf:
         for page in pdf.pages:
+            parts = []
             page_text = page.extract_text()
             if page_text:
-                text += page_text + "\n"
+                parts.append(page_text)
             # 尝试提取表格
             tables = page.extract_tables()
             for table in tables:
                 for row in table:
                     row_text = " | ".join([str(cell) if cell else "" for cell in row])
                     if row_text.strip():
-                        text += row_text + "\n"
-    return text
+                        parts.append(row_text)
+            pages.append("\n".join(parts))
+    pages = _strip_repeated_lines(pages)
+    return "".join(p.rstrip() + "\n" for p in pages)
 # ==================== OCR 扫描件识别 ====================
 def ocr_pdf_with_cnocr(filepath: str, dpi: int = 200) -> str:
     """

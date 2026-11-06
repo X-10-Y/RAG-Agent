@@ -1,5 +1,7 @@
 import os
 import json
+import hashlib
+import contextlib
 import threading
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 from config import DOCS_DIR, get_llm_client
@@ -44,28 +46,70 @@ class RAGChain:
             self._histories = {}
             self._history_lock = threading.Lock()
         self._max_history_turns = 10
+        # 同一 session 的多轮请求串行化，避免改写时读到另一次请求半更新的历史
+        self._session_locks = {}
+        self._session_locks_guard = threading.Lock()
+
+    def session_lock(self, session_id: str = None):
+        """按 session 返回互斥锁；无 session_id 时返回空上下文，不做串行"""
+        if not session_id:
+            return contextlib.nullcontext()
+        with self._session_locks_guard:
+            lock = self._session_locks.setdefault(session_id, threading.Lock())
+        return lock
+
     def _load_and_index(self):
-    # 如果向量库已有数据，跳过重复索引
-        if self.store.count() > 0:
-           print(f"✅ 向量库已有 {self.store.count()} 条数据，跳过索引")
-           return
-        docs = load_text_files(self.data_dir)
-        if not docs:
-           print("⚠️ 未找到文档，跳过索引")
-           return
-        for doc in docs:
-            chunks = split_by_structure(doc['content'])
-            self.store.add_documents(chunks, source_file=doc['filename'])
-        print(f"✅ 已索引 {self.store.count()} 个文本块")
+        # 只为「尚未入库」的文件建索引：既避免重复索引，也能补齐后来新增的文档
+        supported = ('.txt', '.pdf')
+        if not os.path.isdir(self.data_dir):
+            print(f"⚠️ 目录不存在：{self.data_dir}")
+            return
+        filenames = [
+            f for f in os.listdir(self.data_dir)
+            if os.path.splitext(f)[1].lower() in supported
+        ]
+        pending = [f for f in filenames if not self.store.is_file_indexed(f)]
+        if not pending:
+            print(f"✅ 向量库已有 {self.store.count()} 条数据，文档均已入库")
+            return
+        print(f"🔍 发现 {len(pending)} 份文档未入库：{', '.join(pending)}")
+        for filename in pending:
+            text = load_document(os.path.join(self.data_dir, filename))
+            if not text.strip():
+                print(f"⚠️ {filename} 解析为空，跳过")
+                continue
+            chunks = split_by_structure(text)
+            content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            self.store.add_documents(chunks, source_file=filename, content_hash=content_hash)
+            print(f"✅ 已索引 {filename}：{len(chunks)} 个文本块")
+        print(f"✅ 索引完成，当前共 {self.store.count()} 个文本块")
     def index_file(self, filepath: str) -> str:
         """解析单个文件并增量入库，返回解析出的正文（供前端回填）"""
         text = load_document(filepath)
         filename = os.path.basename(filepath)
-        if text.strip() and not self.store.is_file_indexed(filename):
-            chunks = split_by_structure(text)
-            self.store.add_documents(chunks, source_file=filename)
-            print(f"✅ 已索引 {filename}：{len(chunks)} 个文本块")
+        if not text.strip():
+            return text
+        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        # 内容哈希幂等：同样内容重复上传不再重复建索引
+        if self.store.hash_exists(content_hash):
+            print(f"⏭️ {filename} 内容已存在，跳过索引")
+            return text
+        if self.store.is_file_indexed(filename):
+            # 同名文件内容变了：先删旧块再建，避免新旧版本混在一起
+            removed = self.store.delete_source(filename)
+            print(f"♻️ {filename} 内容已更新，替换旧块 {removed} 个")
+        chunks = split_by_structure(text)
+        self.store.add_documents(chunks, source_file=filename, content_hash=content_hash)
+        print(f"✅ 已索引 {filename}：{len(chunks)} 个文本块")
         return text
+    def delete_file(self, filename: str) -> int:
+        """删除文档：向量库/BM25 与磁盘文件一起删，返回移除的文本块数"""
+        removed = self.store.delete_source(filename)
+        path = os.path.join(self.data_dir, filename)
+        if os.path.exists(path):
+            os.remove(path)
+        print(f"🗑️ 已删除 {filename}，移除 {removed} 个文本块")
+        return removed
     # ========== 会话历史（按 session_id 隔离） ==========
     def _history_key(self, session_id: str) -> str:
         return f"{_HISTORY_KEY_PREFIX}{session_id}"
@@ -81,7 +125,7 @@ class RAGChain:
             with self._history_lock:
                 return list(self._histories.get(session_id, []))
 
-    def _append_history(self, session_id: str, question: str, answer: str):
+    def append_history(self, session_id: str, question: str, answer: str):
         if not session_id:
             return
         turn = json.dumps({"user": question, "assistant": answer}, ensure_ascii=False)
@@ -128,9 +172,9 @@ class RAGChain:
         )
         rewritten = resp.choices[0].message.content.strip()
         return rewritten
-    def ask(self, question: str, top_k: int = 5, session_id: str = None,
-            history: list = None, source_file: str = None) -> dict:
-        # 查询改写：优先使用传入的历史，否则按 session_id 取
+    def prepare(self, question: str, top_k: int = 5, session_id: str = None,
+                history: list = None, source_file=None) -> dict:
+        """只做多轮改写 + 检索，不调用生成模型（/ask 与 /ask/stream 复用）"""
         if history is None:
             history = self._get_history(session_id)
         rewritten = self._rewrite_query(question, history)
@@ -138,8 +182,6 @@ class RAGChain:
         print(f"📝 改写后：{rewritten}")
         # 使用改写后的问题检索
         results = self.store.hybrid_search(rewritten, top_k=top_k, source_file=source_file)
-        if not results:
-            return {"answer": "未找到相关信息", "sources": []}
         # 去重
         seen = set()
         unique_results = []
@@ -148,26 +190,40 @@ class RAGChain:
             if content not in seen:
                 seen.add(content)
                 unique_results.append(r)
+        if not unique_results:
+            return {"question": question, "rewritten": rewritten, "context": "", "sources": []}
         print("\n📌 召回的文本块（共{}块）：".format(len(unique_results)))
         for idx, r in enumerate(unique_results):
             print(f"  {idx+1}. 重排分: {r.get('rerank_score', 0):.4f} | 内容预览: {r['content'][:100]}...")
         context = "\n\n".join([r['content'] for r in unique_results])
-        client = get_llm_client()
-        resp = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system", "content": "请基于参考内容回答，只说相关信息，不编造。"},
-                {"role": "user", "content": f"参考内容：\n{context}\n\n问题：{question}"}
-            ],
-            max_tokens=500
-        )
-        answer = resp.choices[0].message.content
-        # 更新会话历史（按 session_id 隔离）
-        self._append_history(session_id, question, answer)
         return {
-            "answer": answer,
+            "question": question,
+            "rewritten": rewritten,
+            "context": context,
             "sources": [{"content": r['content'], "score": r.get('rerank_score', r['score'])} for r in unique_results]
         }
+
+    def ask(self, question: str, top_k: int = 5, session_id: str = None,
+            history: list = None, source_file=None) -> dict:
+        # 同 session 串行：改写读到完整历史，回答写回也不会互相覆盖
+        with self.session_lock(session_id):
+            prep = self.prepare(question, top_k=top_k, session_id=session_id,
+                                history=history, source_file=source_file)
+            if not prep["sources"]:
+                return {"answer": "未找到相关信息", "sources": []}
+            client = get_llm_client()
+            resp = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": "请基于参考内容回答，只说相关信息，不编造。"},
+                    {"role": "user", "content": f"参考内容：\n{prep['context']}\n\n问题：{question}"}
+                ],
+                max_tokens=500
+            )
+            answer = resp.choices[0].message.content
+            # 更新会话历史（按 session_id 隔离）
+            self.append_history(session_id, question, answer)
+            return {"answer": answer, "sources": prep["sources"]}
 
 
 if __name__ == '__main__':
