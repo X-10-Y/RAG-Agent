@@ -138,6 +138,15 @@ class VectorStore:
             return len(result['ids']) > 0
         except Exception:
             return False
+    def count_by_source(self, filename: str) -> int:
+        """统计某个来源文件的文本块数，用于文档列表展示"""
+        if self.collection is None:
+            return 0
+        try:
+            result = self.collection.get(where={"source_file": filename}, include=[])
+            return len(result['ids'])
+        except Exception:
+            return 0
     def hash_exists(self, content_hash: str) -> bool:
         """检查同样内容是否已经入库（用于重复上传跳过索引）"""
         if self.collection is None or not content_hash:

@@ -102,6 +102,9 @@ if "contract_name" not in st.session_state:
     st.session_state.contract_name = ""
 if "api_url" not in st.session_state:
     st.session_state.api_url = os.getenv("API_URL", "http://127.0.0.1:8000")
+if "api_key" not in st.session_state:
+    # 后端配置了 UPLOAD_API_KEY 时，前端在这里填同一个 key
+    st.session_state.api_key = os.getenv("UPLOAD_API_KEY", "")
 API_URL = st.session_state.api_url
 # ============================================================
 # 辅助函数：调用后端
@@ -159,10 +162,28 @@ def call_ask(question: str, top_k: int = 3, source_file: str = "") -> dict:
     if r.status_code != 200:
         raise Exception(f"HTTP {r.status_code}: {r.text}")
     return {"data": r.json(), "elapsed": elapsed}
+def _auth_headers() -> dict:
+    """后端配置了 UPLOAD_API_KEY 时，上传与删除需带 X-API-Key"""
+    return {"X-API-Key": st.session_state.api_key} if st.session_state.api_key else {}
 def call_upload(file_bytes: bytes, filename: str) -> dict:
     """上传合同文件"""
     files = {"file": (filename, file_bytes)}
-    r = requests.post(f"{API_URL}/upload", files=files, timeout=120)
+    r = requests.post(f"{API_URL}/upload", files=files, headers=_auth_headers(), timeout=120)
+    if r.status_code != 200:
+        raise Exception(f"HTTP {r.status_code}: {r.text}")
+    return r.json()
+def call_documents() -> list:
+    """获取知识库文档列表"""
+    try:
+        r = requests.get(f"{API_URL}/documents", timeout=5)
+        if r.status_code == 200:
+            return r.json().get("documents", [])
+    except:
+        pass
+    return []
+def call_delete(filename: str) -> dict:
+    """删除知识库中的某个文档"""
+    r = requests.delete(f"{API_URL}/documents/{filename}", headers=_auth_headers(), timeout=30)
     if r.status_code != 200:
         raise Exception(f"HTTP {r.status_code}: {r.text}")
     return r.json()
@@ -290,6 +311,14 @@ with st.sidebar:
         st.error("❌ 服务未连接")
         st.caption("请先启动后端：`python main.py`")
     st.divider()
+    # 接口鉴权（可选）
+    with st.expander("🔑 接口鉴权（可选）"):
+        st.session_state.api_key = st.text_input(
+            "X-API-Key",
+            value=st.session_state.api_key,
+            type="password",
+            help="仅当后端配置了 UPLOAD_API_KEY 时，填入同一个值"
+        )
     # 上传合同
     st.markdown("#### 📄 上传合同")
     uploaded = st.file_uploader(
@@ -329,6 +358,33 @@ with st.sidebar:
             st.session_state.contract_text = ""
             st.session_state.contract_name = ""
             st.rerun()
+    st.divider()
+    # 知识库文档管理
+    st.markdown("#### 📚 知识库文档")
+    docs = call_documents()
+    if not docs:
+        st.caption("暂无已入库文档")
+    else:
+        st.caption(f"共 {len(docs)} 个文件 · {sum(d['chunks'] for d in docs)} 块")
+        target = st.selectbox(
+            "选择文档",
+            [d["filename"] for d in docs],
+            label_visibility="collapsed"
+        )
+        info = next(d for d in docs if d["filename"] == target)
+        st.caption(f"{info['chunks']} 块 · {info['size_bytes'] / 1024:.0f} KB")
+        confirm = st.checkbox("确认删除（不可恢复）")
+        if st.button("🗑️ 删除文档", use_container_width=True, disabled=not confirm):
+            try:
+                result = call_delete(target)
+                if st.session_state.contract_name == target:
+                    st.session_state.contract_text = ""
+                    st.session_state.contract_name = ""
+                st.success(f"已删除 {target}，移除 {result.get('removed_chunks', 0)} 块")
+                st.rerun()
+            except Exception as e:
+                st.error(f"删除失败：{e}")
+        st.caption("删除内置法规/示范文本会影响评测基线，慎删")
     st.divider()
     # 可用工具说明
     st.markdown("#### 🛠️ 可用能力")

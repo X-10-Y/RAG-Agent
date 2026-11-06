@@ -4,7 +4,7 @@ import os
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 import json
 import shutil
-from fastapi import FastAPI, HTTPException, File, UploadFile, Header
+from fastapi import FastAPI, HTTPException, File, UploadFile, Header, Depends
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
@@ -175,11 +175,12 @@ def ask_stream(request: AskRequest):
 # ==================== 文档上传接口 ====================
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20MB
 _UPLOAD_API_KEY = os.getenv("UPLOAD_API_KEY")  # 不配则跳过鉴权
-@app.post("/upload", response_model=UploadResponse)
-async def upload_file(file: UploadFile = File(...), x_api_key: Optional[str] = Header(default=None)):
-    # API Key 校验（仅当配置了 UPLOAD_API_KEY 时生效；本地演示不配就跳过）
+def require_api_key(x_api_key: Optional[str] = Header(default=None)):
+    """可选鉴权：配置了 UPLOAD_API_KEY 时，上传与删除都必须携带 X-API-Key"""
     if _UPLOAD_API_KEY and x_api_key != _UPLOAD_API_KEY:
-        raise HTTPException(status_code=401, detail="上传鉴权失败")
+        raise HTTPException(status_code=401, detail="鉴权失败：X-API-Key 缺失或不正确")
+@app.post("/upload", response_model=UploadResponse)
+async def upload_file(file: UploadFile = File(...), _: None = Depends(require_api_key)):
     try:
         filename = os.path.basename(file.filename or "")
         if not filename:
@@ -212,6 +213,30 @@ async def upload_file(file: UploadFile = File(...), x_api_key: Optional[str] = H
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+# ==================== 文档列表接口 ====================
+class DocumentInfo(BaseModel):
+    filename: str
+    chunks: int
+    size_bytes: int
+class DocumentListResponse(BaseModel):
+    total_chunks: int
+    documents: List[DocumentInfo]
+@app.get("/documents", response_model=DocumentListResponse)
+def list_documents():
+    """列出知识库文档及各自文本块数，供前端展示与删除"""
+    items = []
+    for name in sorted(os.listdir(DOCS_DIR)):
+        path = os.path.join(DOCS_DIR, name)
+        if not os.path.isfile(path):
+            continue
+        if os.path.splitext(name)[1].lower() not in {".txt", ".pdf"}:
+            continue
+        items.append(DocumentInfo(
+            filename=name,
+            chunks=rag.store.count_by_source(name),
+            size_bytes=os.path.getsize(path)
+        ))
+    return DocumentListResponse(total_chunks=rag.store.count(), documents=items)
 # ==================== 文档删除接口 ====================
 class DeleteResponse(BaseModel):
     message: str
@@ -219,7 +244,7 @@ class DeleteResponse(BaseModel):
     removed_chunks: int
     chunks_left: int
 @app.delete("/documents/{filename}", response_model=DeleteResponse)
-def delete_document(filename: str):
+def delete_document(filename: str, _: None = Depends(require_api_key)):
     name = os.path.basename(filename)
     if not name:
         raise HTTPException(status_code=400, detail="文件名不能为空")

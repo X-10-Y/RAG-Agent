@@ -18,7 +18,7 @@
 
 ```
 Streamlit 前端
-      │  /chat  /ask  /ask/stream  /upload  DELETE /documents
+      │  /chat  /ask  /ask/stream  /upload  /documents
       ▼
 FastAPI（端口 8000）
       │
@@ -137,6 +137,7 @@ streamlit run app.py
 | POST | `/ask` | RAG 知识问答，返回答案与来源 |
 | POST | `/ask/stream` | 流式返回答案，末尾附带来源 |
 | POST | `/upload` | 上传 TXT/PDF/图片并建立索引（同内容重复上传直接跳过） |
+| GET | `/documents` | 列出知识库文档：文件名、文本块数、大小 |
 | DELETE | `/documents/{filename}` | 删除文档：同时清理向量库、BM25 与磁盘文件 |
 | GET | `/status` | 查看已索引文本块数量、向量维度 |
 | GET | `/health` | 健康检查 |
@@ -183,7 +184,7 @@ python test_false_positive.py         # 合规合同误报
 - **工具层没有单次超时**：LLM 客户端已设 60 秒超时 + 2 次重试，但深度扫描是逐条串行调用，p95 仍会到 20 秒以上。
 - **重排模型为英文**：`ms-marco-MiniLM-L-6-v2` 对中文是次优选择，中文场景应换用 bge-reranker 系列。
 - **不支持文件改名与多租户**：文件名是检索过滤的唯一键，改名后需重新上传；没有用户或租户隔离。
-- **上传接口鉴权可选**：仅当配置 `UPLOAD_API_KEY` 时才校验 `X-API-Key`；限制 20MB 与 TXT/PDF/图片。
+- **上传与删除接口鉴权可选**：仅当配置 `UPLOAD_API_KEY` 时才校验 `X-API-Key`；限制 20MB 与 TXT/PDF/图片。生产环境应强制开启，并改为软删除。
 
 ## Roadmap
 
