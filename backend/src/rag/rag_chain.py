@@ -8,7 +8,7 @@ from config import DOCS_DIR, get_llm_client
 from dotenv import load_dotenv
 from rag.loader import load_text_files, load_document
 from rag.splitter import split_by_structure
-from rag.retriever import VectorStore
+from rag.retriever import VectorStore, DEFAULT_TENANT
 load_dotenv()
 
 # ==================== Redis 会话持久化 ====================
@@ -83,32 +83,33 @@ class RAGChain:
             self.store.add_documents(chunks, source_file=filename, content_hash=content_hash)
             print(f"✅ 已索引 {filename}：{len(chunks)} 个文本块")
         print(f"✅ 索引完成，当前共 {self.store.count()} 个文本块")
-    def index_file(self, filepath: str) -> str:
+    def index_file(self, filepath: str, tenant: str = DEFAULT_TENANT) -> str:
         """解析单个文件并增量入库，返回解析出的正文（供前端回填）"""
         text = load_document(filepath)
         filename = os.path.basename(filepath)
         if not text.strip():
             return text
         content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        # 内容哈希幂等：同样内容重复上传不再重复建索引
-        if self.store.hash_exists(content_hash):
-            print(f"⏭️ {filename} 内容已存在，跳过索引")
+        # 内容哈希幂等：同一租户下同样内容重复上传不再重复建索引
+        if self.store.hash_exists(content_hash, tenant):
+            print(f"⏭️ {filename} 内容已存在（租户 {tenant}），跳过索引")
             return text
-        if self.store.is_file_indexed(filename):
+        if self.store.is_file_indexed(filename, tenant):
             # 同名文件内容变了：先删旧块再建，避免新旧版本混在一起
-            removed = self.store.delete_source(filename)
+            removed = self.store.delete_source(filename, tenant)
             print(f"♻️ {filename} 内容已更新，替换旧块 {removed} 个")
         chunks = split_by_structure(text)
-        self.store.add_documents(chunks, source_file=filename, content_hash=content_hash)
-        print(f"✅ 已索引 {filename}：{len(chunks)} 个文本块")
+        self.store.add_documents(chunks, source_file=filename, content_hash=content_hash, tenant=tenant)
+        print(f"✅ 已索引 {filename}（租户 {tenant}）：{len(chunks)} 个文本块")
         return text
-    def delete_file(self, filename: str) -> int:
+    def delete_file(self, filename: str, tenant: str = DEFAULT_TENANT) -> int:
         """删除文档：向量库/BM25 与磁盘文件一起删，返回移除的文本块数"""
-        removed = self.store.delete_source(filename)
+        removed = self.store.delete_source(filename, tenant)
         path = os.path.join(self.data_dir, filename)
-        if os.path.exists(path):
+        # 其他租户还有同一文件的副本时，不能把磁盘文件删掉
+        if os.path.exists(path) and not self.store.tenants_of_source(filename):
             os.remove(path)
-        print(f"🗑️ 已删除 {filename}，移除 {removed} 个文本块")
+        print(f"🗑️ 已删除 {filename}（租户 {tenant}），移除 {removed} 个文本块")
         return removed
     # ========== 会话历史（按 session_id 隔离） ==========
     def _history_key(self, session_id: str) -> str:
@@ -173,15 +174,16 @@ class RAGChain:
         rewritten = resp.choices[0].message.content.strip()
         return rewritten
     def prepare(self, question: str, top_k: int = 5, session_id: str = None,
-                history: list = None, source_file=None) -> dict:
+                history: list = None, source_file=None, tenant: str = DEFAULT_TENANT) -> dict:
         """只做多轮改写 + 检索，不调用生成模型（/ask 与 /ask/stream 复用）"""
         if history is None:
             history = self._get_history(session_id)
         rewritten = self._rewrite_query(question, history)
         print(f"🔍 原始问题：{question}")
         print(f"📝 改写后：{rewritten}")
-        # 使用改写后的问题检索
-        results = self.store.hybrid_search(rewritten, top_k=top_k, source_file=source_file)
+        # 使用改写后的问题检索，租户在检索入口锁死
+        results = self.store.hybrid_search(rewritten, top_k=top_k,
+                                           source_file=source_file, tenant=tenant)
         # 去重
         seen = set()
         unique_results = []
@@ -204,11 +206,11 @@ class RAGChain:
         }
 
     def ask(self, question: str, top_k: int = 5, session_id: str = None,
-            history: list = None, source_file=None) -> dict:
+            history: list = None, source_file=None, tenant: str = DEFAULT_TENANT) -> dict:
         # 同 session 串行：改写读到完整历史，回答写回也不会互相覆盖
         with self.session_lock(session_id):
             prep = self.prepare(question, top_k=top_k, session_id=session_id,
-                                history=history, source_file=source_file)
+                                history=history, source_file=source_file, tenant=tenant)
             if not prep["sources"]:
                 return {"answer": "未找到相关信息", "sources": []}
             client = get_llm_client()

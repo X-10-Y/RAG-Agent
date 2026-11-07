@@ -13,12 +13,15 @@
 | 深度扫描 | 逐条拆解，生成按风险排序的完整报告 | 条款切分 + 逐条分析 + 规则兜底 |
 | 知识问答 | 回答租房常识（押金、转租、甲醛、二房东等） | RAG 混合检索 |
 | 合同上传 | 支持 TXT / PDF / 图片，自动解析、切分、索引；支持删除与按内容哈希幂等 | pdfplumber → pypdf → OCR 降级；sha256 去重 |
+| 租户隔离 | 每个 API Key 对应一个租户，上传 / 检索 / 列表 / 删除都按租户过滤 | Chroma metadata + BM25 双路同步过滤 |
+| 审计日志 | 上传、删除、越权拒绝、判错反馈都落盘，便于追溯 | `data/audit.jsonl`（追加写，不落原始 Key） |
+| 判错反馈 | 前端对回答点"这条判错了"，记录问题、答案、判错类型与理由 | `POST /feedback` → `data/feedback/feedback.jsonl` |
 
 ## 架构
 
 ```
 Streamlit 前端
-      │  /chat  /ask  /ask/stream  /upload  /documents
+      │  /chat  /ask  /ask/stream  /upload  /documents  /feedback
       ▼
 FastAPI（端口 8000）
       │
@@ -53,6 +56,8 @@ FastAPI（端口 8000）
 3. **混合检索**：BM25 负责法条编号、专有名词等精确匹配，向量检索负责语义相近；RRF 用排名而非分数融合，避免 BM25 分数无上界、余弦相似度量纲不一致的问题；最后用 CrossEncoder 对候选重排。
 4. **结构感知切分**：优先按标题、段落、句子切分，表格整块保留不切断，单块上限 500 字。
 5. **失败可回退**：工具返回失败时经条件边回到决策节点重试；同一工具连续失败则强制切换到知识库检索兜底，避免死循环。
+6. **租户隔离**：身份从 `API_KEYS` 解析为 `tenant` + `role`（view < upload < delete < admin）。Chroma 与 BM25 两路检索都按租户过滤，只堵一路会从另一路串数据；`session_id` 由服务端拼成 `tenant:session_id`，客户端改 ID 也读不到别的租户会话；Agent 内部检索用 contextvar 透传当前租户，`/chat` 与 `/ask` 口径一致。
+7. **审计与反馈闭环**：上传、删除、越权拒绝、判错反馈都写 JSONL。审计记录只存 Key 的 `sha256[:8]`，不落原始 Key；反馈记录问题、答案、判错类型与理由，作为评测集迭代的原始素材。
 
 ## 目录结构
 
@@ -73,6 +78,8 @@ Z-RAG-Agent/
 ├── frontend/app.py          # Streamlit 前端
 ├── data/documents/          # 示例合同与知识文档
 ├── data/chroma_db/          # 向量库持久化目录（不入库）
+├── data/audit.jsonl         # 审计日志（上传/删除/越权/反馈）
+├── data/feedback/           # 判错反馈 JSONL
 └── tests/                   # 评测脚本、风险数据集与回归基线
 ```
 
@@ -106,6 +113,16 @@ pip install -r requirements.txt
 DEEPSEEK_API_KEY=sk-你的密钥
 ```
 
+多租户与角色（可选）：
+
+```ini
+# 不配：单租户 default，本地演示无需 Key
+# 配了之后：所有接口（除 /health）都必须带 X-API-Key
+API_KEYS={"key-tenant-a":{"tenant":"t1","role":"admin"},"key-tenant-b":{"tenant":"t2","role":"view"}}
+```
+
+角色是等级制：`view` 只能问答与查看，`upload` 可上传，`delete` 可删除，`admin` 全部可用。只配 `UPLOAD_API_KEY` 时按单租户 `default` + `admin` 处理，兼容旧部署。
+
 代码中已设置 `HF_ENDPOINT=https://hf-mirror.com`，国内网络可直接下载模型。
 
 会话历史默认写入本机 Redis（`localhost:6379`，db=1，TTL 2 小时），可用 `REDIS_HOST` / `REDIS_PORT` / `RAG_REDIS_DB` 覆盖；Redis 不可用时自动降级为进程内字典，服务照常可用。
@@ -138,8 +155,9 @@ streamlit run app.py
 | POST | `/ask/stream` | 流式返回答案，末尾附带来源 |
 | POST | `/upload` | 上传 TXT/PDF/图片并建立索引（同内容重复上传直接跳过） |
 | GET | `/documents` | 列出知识库文档：文件名、文本块数、大小 |
-| DELETE | `/documents/{filename}` | 删除文档：同时清理向量库、BM25 与磁盘文件 |
-| GET | `/status` | 查看已索引文本块数量、向量维度 |
+| DELETE | `/documents/{filename}` | 删除文档：同时清理向量库、BM25 与磁盘文件（仅本租户、需 delete 角色） |
+| POST | `/feedback` | 提交判错反馈：问题、答案、判错类型、理由 |
+| GET | `/status` | 查看当前租户已索引文本块数量、向量维度 |
 | GET | `/health` | 健康检查 |
 | GET | `/` | 服务信息 |
 
@@ -183,8 +201,11 @@ python test_false_positive.py         # 合规合同误报
 - **条号只到"第 X 条"**：没有下探到款、项级别，报告无法精确定位到"第 X 条第 Y 款"。
 - **工具层没有单次超时**：LLM 客户端已设 60 秒超时 + 2 次重试，但深度扫描是逐条串行调用，p95 仍会到 20 秒以上。
 - **重排模型为英文**：`ms-marco-MiniLM-L-6-v2` 对中文是次优选择，中文场景应换用 bge-reranker 系列。
-- **不支持文件改名与多租户**：文件名是检索过滤的唯一键，改名后需重新上传；没有用户或租户隔离。
-- **上传与删除接口鉴权可选**：仅当配置 `UPLOAD_API_KEY` 时才校验 `X-API-Key`；限制 20MB 与 TXT/PDF/图片。生产环境应强制开启，并改为软删除。
+- **逻辑隔离已闭环，物理隔离未做**：租户只靠 Chroma metadata 与 BM25 过滤，共用一套向量库和一个磁盘目录；不同租户上传同名文件时磁盘上只有一份，内容会互相覆盖（各自已入库的文本块不受影响）。生产应改为每租户独立 collection / 独立存储目录，并给上传文件加租户前缀。
+- **内置法规库属于 default 租户**：开启 `API_KEYS` 后，新租户只能检索自己名下的文档；如需共用法规库，应把公共语料复制到各租户，或把 default 视为只读公共库。
+- **鉴权默认关闭**：未配置 `API_KEYS` / `UPLOAD_API_KEY` 时按匿名 admin 处理（方便本地演示）；生产必须强制开启，并改为软删除。
+- **不支持文件改名**：文件名是检索过滤的唯一键，改名后需重新上传。
+- **审计与反馈只落本地 JSONL**：没有轮转、索引和后台查询页，量大了要换成数据库或日志系统。
 
 ## Roadmap
 
@@ -192,3 +213,4 @@ python test_false_positive.py         # 合规合同误报
 - 深度扫描改为并发 + 限流，降低 p95 长尾
 - 换用中文 reranker，并补 recall@k / MRR 指标
 - 条号定位下探到款 / 项，并支持文件改名
+- 每租户独立 collection / 存储目录，补齐物理隔离

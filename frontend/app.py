@@ -117,9 +117,9 @@ def call_health() -> bool:
     except:
         return False
 def call_status() -> dict:
-    """获取知识库状态"""
+    """获取知识库状态（按当前 Key 所属租户统计）"""
     try:
-        r = requests.get(f"{API_URL}/status", timeout=3)
+        r = requests.get(f"{API_URL}/status", headers=_auth_headers(), timeout=3)
         if r.status_code == 200:
             return r.json()
     except:
@@ -146,7 +146,7 @@ def call_chat(user_input: str, contract_text: str = "", history: list = None) ->
         "history": history if history else []
     }
     start = time.time()
-    r = requests.post(f"{API_URL}/chat", json=payload, timeout=180)
+    r = requests.post(f"{API_URL}/chat", json=payload, headers=_auth_headers(), timeout=180)
     elapsed = time.time() - start
     if r.status_code != 200:
         raise Exception(f"HTTP {r.status_code}: {r.text}")
@@ -157,7 +157,7 @@ def call_ask(question: str, top_k: int = 3, source_file: str = "") -> dict:
     if source_file:
         payload["source_file"] = source_file
     start = time.time()
-    r = requests.post(f"{API_URL}/ask", json=payload, timeout=60)
+    r = requests.post(f"{API_URL}/ask", json=payload, headers=_auth_headers(), timeout=60)
     elapsed = time.time() - start
     if r.status_code != 200:
         raise Exception(f"HTTP {r.status_code}: {r.text}")
@@ -175,7 +175,7 @@ def call_upload(file_bytes: bytes, filename: str) -> dict:
 def call_documents() -> list:
     """获取知识库文档列表"""
     try:
-        r = requests.get(f"{API_URL}/documents", timeout=5)
+        r = requests.get(f"{API_URL}/documents", headers=_auth_headers(), timeout=5)
         if r.status_code == 200:
             return r.json().get("documents", [])
     except:
@@ -184,6 +184,20 @@ def call_documents() -> list:
 def call_delete(filename: str) -> dict:
     """删除知识库中的某个文档"""
     r = requests.delete(f"{API_URL}/documents/{filename}", headers=_auth_headers(), timeout=30)
+    if r.status_code != 200:
+        raise Exception(f"HTTP {r.status_code}: {r.text}")
+    return r.json()
+def call_feedback(question: str, answer: str, reason: str, note: str = "", risk: str = "") -> dict:
+    """提交「这条判错了」反馈"""
+    payload = {
+        "question": question,
+        "answer": answer,
+        "risk": risk,
+        "reason": reason,
+        "note": note,
+        "session_id": "ui",
+    }
+    r = requests.post(f"{API_URL}/feedback", json=payload, headers=_auth_headers(), timeout=10)
     if r.status_code != 200:
         raise Exception(f"HTTP {r.status_code}: {r.text}")
     return r.json()
@@ -296,6 +310,28 @@ def render_answer(answer_raw, tool_used: str = ""):
         return
     # 兜底：纯文本
     st.markdown(str(answer_raw))
+FEEDBACK_REASONS = ["风险等级偏高", "风险等级偏低", "不是风险（误报）", "漏掉了风险", "解释/建议不准确", "其他"]
+def render_feedback_ui(msg_idx: int, msg: dict):
+    """助手回答下方的「这条判错了」入口：选择判错类型 + 补充说明后提交"""
+    if msg.get("feedback_sent"):
+        st.caption(f"✅ 已提交反馈（编号 {msg.get('feedback_id', '')}）")
+        return
+    question = msg.get("question", "")
+    with st.expander("🙅 这条判错了？"):
+        reason = st.selectbox("判错类型", FEEDBACK_REASONS, key=f"fb_reason_{msg_idx}")
+        risk = st.text_input("涉及的风险等级（可留空：高/中/低）", key=f"fb_risk_{msg_idx}")
+        note = st.text_area("补充说明（写下你认为的正确判断）", key=f"fb_note_{msg_idx}", height=70)
+        if st.button("提交反馈", key=f"fb_submit_{msg_idx}", use_container_width=True):
+            if not question:
+                st.warning("找不到对应的问题，暂不能提交")
+            else:
+                try:
+                    result = call_feedback(question, msg.get("content", ""), reason, note, risk)
+                    msg["feedback_sent"] = True
+                    msg["feedback_id"] = result.get("id", "")
+                    st.success(f"已记录，编号 {result.get('id', '')}")
+                except Exception as e:
+                    st.error(f"提交失败：{e}")
 # ============================================================
 # 侧边栏
 # ============================================================
@@ -317,7 +353,7 @@ with st.sidebar:
             "X-API-Key",
             value=st.session_state.api_key,
             type="password",
-            help="仅当后端配置了 UPLOAD_API_KEY 时，填入同一个值"
+            help="后端配置 API_KEYS 或 UPLOAD_API_KEY 时，填入对应 Key；不同 Key 对应不同租户"
         )
     # 上传合同
     st.markdown("#### 📄 上传合同")
@@ -415,7 +451,7 @@ with st.sidebar:
 st.markdown('<p class="main-title">🏠 租房合同避坑助手</p>', unsafe_allow_html=True)
 st.markdown('<p class="sub-title">AI Agent 自动识别合同风险 · 逐条分析 · 给出修改建议</p>', unsafe_allow_html=True)
 # 显示历史消息
-for msg in st.session_state.messages:
+for msg_idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         if msg["role"] == "assistant":
             if msg.get("tool_used"):
@@ -423,6 +459,7 @@ for msg in st.session_state.messages:
                             f'<span class="meta-info">{msg.get("elapsed", 0):.1f}s</span>',
                             unsafe_allow_html=True)
             render_answer(msg["content"], msg.get("tool_used", ""))
+            render_feedback_ui(msg_idx, msg)
         else:
             st.markdown(msg["content"])
 # 处理"快速开始"点击
@@ -455,12 +492,15 @@ if prompt:
                             f'<span class="meta-info">{elapsed:.1f}s</span>',
                             unsafe_allow_html=True)
                 render_answer(answer, tool_used)
-                st.session_state.messages.append({
+                assistant_msg = {
                     "role": "assistant",
                     "content": answer,
+                    "question": prompt,
                     "tool_used": tool_used,
                     "elapsed": elapsed
-                })
+                }
+                st.session_state.messages.append(assistant_msg)
+                render_feedback_ui(len(st.session_state.messages) - 1, assistant_msg)
             except requests.exceptions.ConnectionError:
                 st.error("❌ 无法连接到后端服务")
                 st.caption("请确认已在 `backend/src` 目录下运行 `python main.py`")

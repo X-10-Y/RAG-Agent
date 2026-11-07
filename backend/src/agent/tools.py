@@ -2,10 +2,11 @@ import json
 import os
 import time
 import re
+import contextvars
 from dotenv import load_dotenv
 load_dotenv()
 from config import CHROMA_DB_DIR, get_llm_client
-from rag.retriever import VectorStore
+from rag.retriever import VectorStore, DEFAULT_TENANT
 from rag.loader import load_document
 from rag.splitter import split_by_structure
 # ============================================================
@@ -33,6 +34,12 @@ def retry(max_retries=3, delay=1, backoff=2):
 # ============================================================
 _rag_store = None
 _all_docs = None
+# 当前请求的租户：由 API 层在调用 Agent 前 set，工具内部检索时读取
+_CURRENT_TENANT = contextvars.ContextVar("rag_current_tenant", default=DEFAULT_TENANT)
+def set_current_tenant(tenant: str):
+    return _CURRENT_TENANT.set(tenant or DEFAULT_TENANT)
+def reset_current_tenant(token):
+    _CURRENT_TENANT.reset(token)
 
 @retry(max_retries=3, delay=1)
 def get_rag_store():
@@ -65,7 +72,7 @@ def rag_search(question: str, top_k: int = 5) -> dict:
         return {"answer": "⚠️ 知识库不可用", "sources": []}
 
     try:
-        results = store.search(question, top_k=top_k)
+        results = store.search(question, top_k=top_k, tenant=_CURRENT_TENANT.get())
     except Exception as e:
         return {"answer": f"⚠️ 检索异常：{str(e)}", "sources": []}
 
@@ -292,9 +299,10 @@ def upload_document(file_path: str) -> str:
         if store is None:
             return "❌ 向量库不可用"
         filename = os.path.basename(file_path)
-        if hasattr(store, 'is_file_indexed') and store.is_file_indexed(filename):
+        tenant = _CURRENT_TENANT.get()
+        if hasattr(store, 'is_file_indexed') and store.is_file_indexed(filename, tenant):
             return f"ℹ️ 文档 '{filename}' 已在知识库中，无需重复上传"
-        store.add_documents(chunks, source_file=filename)
+        store.add_documents(chunks, source_file=filename, tenant=tenant)
         return f"✅ 文档 '{filename}' 上传成功！共 {len(chunks)} 个片段已索引。"
     except Exception as e:
         return f"❌ 上传失败：{str(e)}"

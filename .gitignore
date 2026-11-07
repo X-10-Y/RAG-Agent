@@ -5,6 +5,8 @@ __pycache__/
 venv/
 .env
 data/chroma_db/
+data/audit.jsonl
+data/feedback/
 *.log
 .vscode/
 .idea/
